@@ -36,7 +36,6 @@ Prova Greg/
 │   │           └── route.ts     # API: salva transazione via Python script
 │   ├── next.config.ts           # transpilePackages: ['chartjs-plugin-zoom']
 │   ├── package.json
-│   ├── firebase.json            # Config Firebase Hosting (non usato attivamente)
 │   └── .vercel/                 # Config Vercel (projectId linked)
 │
 ├── execution/                   # Script Python deterministici
@@ -166,6 +165,7 @@ Prova Greg/
 ## 8. Deployment
 
 ### Vercel (produzione)
+> Il progetto usa **Vercel** come unica piattaforma di deploy. Firebase è stato rimosso.
 ```bash
 cd frontend
 npx vercel --prod --yes
