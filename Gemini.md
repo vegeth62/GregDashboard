@@ -170,8 +170,8 @@ Prova Greg/
 cd frontend
 npx vercel --prod --yes
 ```
-- Project ID: `prj_VLjZwbLGQA9qRsQyPMAmCTfbCoih`
-- Org ID: `team_9FJxwQaAEJO9gqf2WcPeiFPu`
+- Project ID: `prj_ZYH011DW7dtPNtWS0fuypaF0Jobe`
+- Org ID: `team_CNYcQsayffrBpCnslo7eQT0d`
 - **⚠️ Filesystem**: solo `/tmp` è scrivibile. Le sessioni storiche su Vercel sono in `/tmp/market/` e si perdono ad ogni cold start.
 
 ### Locale (sviluppo)
