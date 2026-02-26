@@ -82,14 +82,18 @@ function getTodayKey() {
 }
 
 function isInTradingHours() {
-    const hour = new Date().getHours();
-    return hour >= 0 && hour < 23;
+    const now = new Date();
+    const hour = now.getHours();
+    const minutes = now.getMinutes();
+    // Active from 00:05 to 23:00 Italian time
+    if (hour === 0) return minutes >= 5;
+    return hour >= 1 && hour < 23;
 }
 
 function isTradingJustStarted() {
-    // Returns true if current time is exactly 00:00:xx (within first minute)
+    // Returns true if current time is exactly 00:05:xx (within first minute of trading)
     const now = new Date();
-    return now.getHours() === 0 && now.getMinutes() === 0;
+    return now.getHours() === 0 && now.getMinutes() === 5;
 }
 
 export default function MarketPage() {
@@ -416,8 +420,8 @@ export default function MarketPage() {
                 const hour = new Date().getHours();
                 const minutes = new Date().getMinutes();
 
-                if (hour === 0 && minutes === 0) {
-                    // New session start: clear data and start fresh
+                if (hour === 0 && minutes === 5) {
+                    // New session start at 00:05: clear data and start fresh
                     localStorage.removeItem(`marketData_${getTodayKey()}`);
                     setDataPoints([]);
                     setFirstEsfValue(null);
@@ -722,7 +726,7 @@ export default function MarketPage() {
                         <span className="text-xl">⏸️</span>
                         <div>
                             <p className="text-sm font-medium text-slate-200">Polling inactive — outside trading window</p>
-                            <p className="text-xs text-slate-400 mt-0.5">Live data collection runs <span className="text-slate-300 font-medium">00:00 – 23:00</span> (local time). Historical data from today is shown above.</p>
+                            <p className="text-xs text-slate-400 mt-0.5">Live data collection runs <span className="text-slate-300 font-medium">00:05 – 23:00</span> (local time). Historical data from today is shown above.</p>
                         </div>
                     </div>
                 )}

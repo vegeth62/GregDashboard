@@ -108,8 +108,12 @@ def main():
     while True:
         now = datetime.now()
         hour = now.hour
+        minute = now.minute
         
-        if START_HOUR <= hour < END_HOUR:
+        # Active from 00:05 to 23:00
+        is_active = (hour == 0 and minute >= 5) or (START_HOUR + 1 <= hour < END_HOUR)
+        
+        if is_active:
             vix, esf = fetch_latest_data()
             if vix is not None and esf is not None:
                 time_str = now.strftime('%H:%M:%S')

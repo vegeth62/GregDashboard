@@ -9,7 +9,7 @@
 
 **Greg Dashboard** è un'applicazione web personale a uso esclusivo di **Gregorio** per:
 
-1. **Market Monitor** — monitoraggio in tempo reale di VIX (Volatility Index) e ES=F (S&P 500 Futures) con grafici interattivi, durante la finestra di trading 15:00–23:00 CET. Archiviazione e consultazione delle sessioni storiche per data.
+1. **Market Monitor** — monitoraggio in tempo reale di VIX (Volatility Index) e ES=F (S&P 500 Futures) con grafici interattivi, durante la finestra di trading 00:05–23:00 CET. Archiviazione e consultazione delle sessioni storiche per data.
 2. **Finance Input** — registrazione manuale di transazioni finanziarie personali (entrate/uscite) in un CSV locale.
 
 **URL di produzione:** [https://vix-es-monitor.vercel.app](https://vix-es-monitor.vercel.app)
@@ -88,22 +88,22 @@ Prova Greg/
 ### 5.1 Polling e Finestra Oraria
 
 ```
-15:00 ──────────────────────── 23:00
+00:05 ──────────────────────── 23:00
   │  Polling ogni 5 secondi      │
   │  Dati salvati su disco/tmp   │
   └──────────────────────────────┘
   Prima e dopo: status = 'paused', dati visibili
 ```
 
-- **`isInTradingHours()`** → `getHours() >= 15 && < 23`
-- **Session reset**: alle `15:00:00` (rilevato via watcher ogni 30s), il localStorage del giorno viene svuotato e il grafico riparte da zero
-- **Watcher**: `setInterval` ogni 30s controlla la transizione 15:00 e 23:00
+- **`isInTradingHours()`** → `(hour == 0 and minutes >= 5) || hour >= 1 && < 23`
+- **Session reset**: alle `00:05:00` (rilevato via watcher ogni 30s), il localStorage del giorno viene svuotato e il grafico riparte da zero
+- **Watcher**: `setInterval` ogni 30s controlla la transizione 00:05 e 23:00
 
 ### 5.2 Persistence Strategy
 
 | Storage | Cosa contiene | Durata |
 |---|---|---|
-| `localStorage.marketData_YYYY-MM-DD` | Tutti i data points del giorno | Fino alla prossima 15:00 |
+| `localStorage.marketData_YYYY-MM-DD` | Tutti i data points del giorno | Fino alla prossima 00:05 |
 | `localStorage.marketRefLines` | Reference lines (R1/R2 up/down) | Permanente |
 | `localStorage.marketRefLineVisibility` | Visibilità delle reference lines | Permanente |
 | Disco: `../data/market/YYYY-MM-DD.json` | Archivio sessioni (locale) | Permanente |
@@ -112,7 +112,7 @@ Prova Greg/
 ### 5.3 Flusso Mount della pagina `/market`
 
 1. Check auth → se fail, redirect `/login`
-2. Controlla `isTradingJustStarted()` → se sì, clear localStorage oggi
+2. Controlla `isTradingJustStarted()` (00:05) → se sì, clear localStorage oggi
 3. Carica `marketData_YYYY-MM-DD` da localStorage (fast first render)
 4. Fetch `/api/market?history=true` (yfinance intraday) per colmare i gap
 5. Se dentro finestra oraria → start polling ogni 5s
@@ -122,7 +122,7 @@ Prova Greg/
 ### 5.4 API Routes
 
 #### `GET /api/market`
-- **No params** → prezzo live da `yahoo-finance2.quote()` + archivio su disco se 15:00–23:00
+- **No params** → prezzo live da `yahoo-finance2.quote()` + archivio su disco se 00:05–23:00
 - **`?history=true`** → dati intraday da `yahoo-finance2.chart()` (da inizio giornata)
 - **`?date=YYYY-MM-DD`** → legge file JSON archivio per quella data
 
