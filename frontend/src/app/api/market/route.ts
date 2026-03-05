@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import YahooFinance from 'yahoo-finance2';
 import { createClient } from '@supabase/supabase-js';
+import fs from 'fs';
+import path from 'path';
 
 const yahooFinance = new (YahooFinance as any)();
 
@@ -25,18 +27,25 @@ export async function GET(request: Request) {
         const historyMode = searchParams.get('history') === 'true';
         const dateParam = searchParams.get('date'); // e.g. ?date=2026-02-19
 
-        // --- Serve archived session from Supabase ---
-        if (dateParam) {
-            const { data, error } = await supabase
-                .from('market_data')
-                .select('time, vix, esf, created_at')
-                .eq('date', dateParam)
-                .order('created_at', { ascending: true });
+        const isSupabaseConfigured = supabaseUrl !== 'https://placeholder.supabase.co';
 
-            if (error) throw error;
-            const history = (data || []).map((item: any) => ({
+        const getLocalData = (dateStr: string) => {
+            try {
+                const dataPath = path.join(process.cwd(), '..', 'data', 'market', `${dateStr}.json`);
+                if (fs.existsSync(dataPath)) {
+                    const content = fs.readFileSync(dataPath, 'utf-8');
+                    return JSON.parse(content);
+                }
+            } catch (e) {
+                console.error('Local JSON Error:', e);
+            }
+            return null;
+        };
+
+        const formatHistory = (data: any[]) => {
+            return (data || []).map((item: any) => ({
                 ...item,
-                time: new Date(item.created_at).toLocaleTimeString('it-IT', {
+                time: item.time || new Date(item.created_at).toLocaleTimeString('it-IT', {
                     timeZone: 'Europe/Rome',
                     hour12: false,
                     hour: '2-digit',
@@ -44,21 +53,44 @@ export async function GET(request: Request) {
                     second: '2-digit'
                 })
             }));
-            return NextResponse.json({ date: dateParam, history }, { status: 200 });
+        };
+
+        // --- Serve archived session ---
+        if (dateParam) {
+            let data = null;
+            if (isSupabaseConfigured) {
+                try {
+                    const res = await supabase
+                        .from('market_data')
+                        .select('time, vix, esf, created_at')
+                        .eq('date', dateParam)
+                        .order('created_at', { ascending: true });
+                    data = res.data;
+                } catch (e) { console.error('Supabase fetch failed:', e); }
+            }
+            if (!data || data.length === 0) data = getLocalData(dateParam);
+
+            return NextResponse.json({ date: dateParam, history: formatHistory(data || []) }, { status: 200 });
         }
 
         // --- Intraday history for today ---
         if (historyMode) {
             const today = getTodayKey();
-            const { data, error } = await supabase
-                .from('market_data')
-                .select('time, vix, esf, created_at')
-                .eq('date', today)
-                .order('created_at', { ascending: true });
+            let data = null;
 
-            if (error) throw error;
+            if (isSupabaseConfigured) {
+                try {
+                    const res = await supabase
+                        .from('market_data')
+                        .select('time, vix, esf, created_at')
+                        .eq('date', today)
+                        .order('created_at', { ascending: true });
+                    data = res.data;
+                } catch (e) { console.error('Supabase fetch failed:', e); }
+            }
+            if (!data || data.length === 0) data = getLocalData(today);
 
-            // If Supabase is empty for today, fallback to yfinance for the first load
+            // If local/Supabase is empty for today, fallback to yfinance for the first load
             if (!data || data.length === 0) {
                 const now = new Date();
                 const startOfDay = new Date(now);
@@ -109,32 +141,38 @@ export async function GET(request: Request) {
                 return NextResponse.json({ history }, { status: 200 });
             }
 
-            const history = data.map((item: any) => ({
-                ...item,
-                time: new Date(item.created_at).toLocaleTimeString('it-IT', {
-                    timeZone: 'Europe/Rome',
-                    hour12: false,
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit'
-                })
-            }));
-
-            return NextResponse.json({ history }, { status: 200 });
+            return NextResponse.json({ history: formatHistory(data) }, { status: 200 });
 
         } else {
             // --- Latest price mode ---
-            const [vixQuote, esfQuote] = await Promise.all([
-                yahooFinance.quote('^VIX') as any,
-                yahooFinance.quote('ES=F') as any
-            ]);
+            const today = getTodayKey();
+            let vixPrice = null;
+            let esfPrice = null;
 
-            const vixPrice = vixQuote.regularMarketPrice
-                ? Math.round(vixQuote.regularMarketPrice * 100) / 100
-                : null;
-            const esfPrice = esfQuote.regularMarketPrice
-                ? Math.round(esfQuote.regularMarketPrice * 100) / 100
-                : null;
+            if (isSupabaseConfigured) {
+                try {
+                    const { data, error } = await supabase
+                        .from('market_data')
+                        .select('vix, esf, created_at')
+                        .eq('date', today)
+                        .order('created_at', { ascending: false })
+                        .limit(1);
+
+                    if (!error && data && data.length > 0) {
+                        vixPrice = data[0].vix;
+                        esfPrice = data[0].esf;
+                    }
+                } catch (e) { console.error('Supabase fetch failed:', e); }
+            }
+
+            if (vixPrice === null || esfPrice === null) {
+                const localData = getLocalData(today);
+                if (localData && localData.length > 0) {
+                    const lastPoint = localData[localData.length - 1];
+                    vixPrice = lastPoint.vix;
+                    esfPrice = lastPoint.esf;
+                }
+            }
 
             const now = new Date();
             return NextResponse.json({
