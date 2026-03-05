@@ -86,14 +86,28 @@ def main():
         print("WARNING: Supabase credentials not found. Falling back to local files only.")
     
     ib = IB()
+    connected = False
+    
+    import random
+    client_id = random.randint(1, 9999)
+    
     try:
-        # Connect to TWS/Gateway
-        # default port for TWS: 7496, for IB Gateway: 4001
-        ib.connect('127.0.0.1', 7496, clientId=1)
-        print("Connected to IBKR.")
+        print(f"Attempting to connect to IBKR TWS on 127.0.0.1:7496 as clientId {client_id}...")
+        ib.connect('127.0.0.1', 7496, clientId=client_id)
+        print("Connected to IBKR on port 7496.")
+        connected = True
     except Exception as e:
-        print(f"Failed to connect to IBKR TWS: {e}")
+        pass
+            
+    if not connected:
+        print("\nERROR: Failed to connect to IBKR on port 7496.")
+        print("Please make sure TWS is open, and go to:")
+        print("File -> Global Configuration -> API -> Settings")
+        print("And check 'Enable ActiveX and Socket Clients'.")
         return
+
+    # User confirmed they have real-time subscriptions, defaulting to 1 (Live)
+    ib.reqMarketDataType(1)
 
     # Request market data
     # VIX Index
@@ -123,7 +137,9 @@ def main():
             vix = vix_ticker.marketPrice()
             esf = esf_ticker.marketPrice()
             
-            if vix > 0 and esf > 0:
+            # Check if vix/esf are valid numbers, not NaN or 0
+            # IB uses nan for missing data initially
+            if vix == vix and esf == esf and vix > 0 and esf > 0:
                 # Format to 2 decimal places
                 vix_rounded = round(float(vix), 2)
                 esf_rounded = round(float(esf), 2)
