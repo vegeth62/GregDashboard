@@ -198,6 +198,15 @@ export default function MarketPage() {
                 if (refLines.r1Up && !isNaN(parseFloat(refLines.r1Up)) && refLineVisibility.r1Up)
                     visibleRefValues.push(parseFloat(refLines.r1Up));
 
+                // Include actual ES=F data points in scale calculation
+                const esfValues = dataPoints.map(d => d.esf).filter(v => v !== null) as number[];
+                if (esfValues.length > 0) {
+                    const dataMin = Math.min(...esfValues);
+                    const dataMax = Math.max(...esfValues);
+                    esfMinVal = Math.min(esfMinVal, dataMin - 10);
+                    esfMaxVal = Math.max(esfMaxVal, dataMax + 10);
+                }
+
                 if (visibleRefValues.length > 0) {
                     const minRef = Math.min(...visibleRefValues);
                     const maxRef = Math.max(...visibleRefValues);
@@ -587,7 +596,7 @@ export default function MarketPage() {
                 position: 'left' as const,
                 display: true,
                 title: { display: true, text: 'VIX', color: '#3b82f6', font: { size: 13, weight: 'bold' as const } },
-                ticks: { color: '#3b82f6', font: { size: 11 } },
+                ticks: { color: '#cbd5e1', font: { size: 12 }, padding: 8 },
                 grid: { color: 'rgba(59, 130, 246, 0.08)' },
             },
             'y-right': {
@@ -596,8 +605,9 @@ export default function MarketPage() {
                 display: true,
                 title: { display: true, text: 'ES=F ($)', color: '#22c55e', font: { size: 13, weight: 'bold' as const } },
                 ticks: {
-                    color: '#22c55e',
-                    font: { size: 11 },
+                    color: '#cbd5e1',
+                    font: { size: 12 },
+                    padding: 8,
                     callback: function (value: string | number) {
                         return `$${Number(value).toLocaleString()}`;
                     },
