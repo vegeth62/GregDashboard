@@ -165,8 +165,8 @@ export default function MarketPage() {
         const annotations: any = {};
 
         // Find local maxima and minima in ES=F
-        // A peak/trough is relative to 5 points on each side
-        const window = 5;
+        // A peak/trough is relative to 8 points on each side (captures larger moves)
+        const window = 8;
         const peaks: { index: number; time: string; esf: number; vix: number }[] = [];
         const troughs: { index: number; time: string; esf: number; vix: number }[] = [];
 
@@ -178,22 +178,34 @@ export default function MarketPage() {
             let isTrough = true;
             for (let j = i - window; j <= i + window; j++) {
                 if (i === j) continue;
-                if (points[j].esf !== null) {
-                    if (points[j].esf! >= current.esf!) isPeak = false;
-                    if (points[j].esf! <= current.esf!) isTrough = false;
+                const other = points[j];
+                if (other.esf !== null) {
+                    if (other.esf! > current.esf!) isPeak = false;
+                    if (other.esf! < current.esf!) isTrough = false;
                 }
             }
             if (isPeak) peaks.push({ index: i, time: current.time, esf: current.esf!, vix: current.vix! });
             if (isTrough) troughs.push({ index: i, time: current.time, esf: current.esf!, vix: current.vix! });
         }
 
-        // Bearish Divergence: Price HH, VIX HH (or simply VIX not making LL)
+        // Helper for time difference (HH:mm:ss)
+        const getDiffMinutes = (t1: string, t2: string) => {
+            const [h1, m1, s1] = t1.split(':').map(Number);
+            const [h2, m2, s2] = t2.split(':').map(Number);
+            const d1 = new Date(0, 0, 0, h1, m1, s1);
+            const d2 = new Date(0, 0, 0, h2, m2, s2);
+            return Math.abs(d2.getTime() - d1.getTime()) / (1000 * 60);
+        };
+
+        // Bearish Divergence: Price HH, VIX HH (Anomaly)
         for (let i = 1; i < peaks.length; i++) {
             const p1 = peaks[i - 1];
             const p2 = peaks[i];
+            const diff = getDiffMinutes(p1.time, p2.time);
 
-            // If price makes a higher high, VIX should make a lower low
-            if (p2.esf > p1.esf && p2.vix > p1.vix) {
+            // Price makes Higher High, but VIX also fails to make Lower Low (Higher High here is anomaly)
+            // Duration filter: at least 1 minute to exclude noise
+            if (p2.esf > p1.esf && p2.vix > p1.vix && diff >= 1) {
                 annotations[`div-bear-${i}`] = {
                     type: 'box',
                     xMin: p1.time,
@@ -212,13 +224,14 @@ export default function MarketPage() {
             }
         }
 
-        // Bullish Divergence: Price LL, VIX LL (or simply VIX not making HH)
+        // Bullish Divergence: Price LL, VIX LL (Anomaly)
         for (let i = 1; i < troughs.length; i++) {
             const t1 = troughs[i - 1];
             const t2 = troughs[i];
+            const diff = getDiffMinutes(t1.time, t2.time);
 
-            // If price makes a lower low, VIX should make a higher high
-            if (t2.esf < t1.esf && t2.vix < t1.vix) {
+            // Price makes Lower Low, but VIX also fails to make Higher High (Lower Low here is anomaly)
+            if (t2.esf < t1.esf && t2.vix < t1.vix && diff >= 1) {
                 annotations[`div-bull-${i}`] = {
                     type: 'box',
                     xMin: t1.time,
