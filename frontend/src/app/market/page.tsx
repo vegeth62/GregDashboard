@@ -140,6 +140,7 @@ export default function MarketPage() {
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const sessionWatchRef = useRef<NodeJS.Timeout | null>(null);
     const chartRef = useRef<any>(null);
+    const manualZoomRef = useRef(false);
     const vertZoomRef = useRef<{ active: boolean; startY: number; startRangeLeft: [number, number]; startRangeRight: [number, number] } | null>(null);
 
     // ---- Auth check ----
@@ -191,7 +192,10 @@ export default function MarketPage() {
         });
         chart.options.plugins.annotation.annotations = newAnnotations;
 
-        if (!isZoomedRef.current) {
+        // Use both plugin and manual zoom flags to determine if we should skip autoscaling
+        const isCurrentlyZoomed = isZoomedRef.current || manualZoomRef.current;
+
+        if (!isCurrentlyZoomed) {
             if (firstEsfValue !== null) {
                 const baseRange = 50;
                 let esfMinVal = firstEsfValue - baseRange;
@@ -503,7 +507,7 @@ export default function MarketPage() {
         chart.options.scales['y-right'].min = newRangeRight[0];
         chart.options.scales['y-right'].max = newRangeRight[1];
 
-        isZoomedRef.current = true;
+        manualZoomRef.current = true;
         chart.update('none');
     };
 
@@ -540,6 +544,7 @@ export default function MarketPage() {
         if (chartRef.current) {
             chartRef.current.resetZoom();
             isZoomedRef.current = false;
+            manualZoomRef.current = false;
         }
     };
 
