@@ -141,7 +141,11 @@ export default function MarketPage() {
     const sessionWatchRef = useRef<NodeJS.Timeout | null>(null);
     const chartRef = useRef<any>(null);
     const manualZoomRef = useRef(false);
-    const manualLimitsRef = useRef<{ yLeft: [number, number]; yRight: [number, number] } | null>(null);
+    const manualLimitsRef = useRef<{
+        x: [any, any] | null;
+        yLeft: [number, number] | null;
+        yRight: [number, number] | null;
+    }>({ x: null, yLeft: null, yRight: null });
     const vertZoomRef = useRef<{ active: boolean; startY: number; startRangeLeft: [number, number]; startRangeRight: [number, number] } | null>(null);
 
     // ---- Auth check ----
@@ -157,7 +161,17 @@ export default function MarketPage() {
     // ---- Zoom ----
     const updateZoomState = useCallback(() => {
         if (chartRef.current) {
-            isZoomedRef.current = chartRef.current.isZoomedOrPanned();
+            const chart = chartRef.current;
+            isZoomedRef.current = chart.isZoomedOrPanned();
+
+            // If zoomed (either by plugin or manually), save ALL current limits
+            if (isZoomedRef.current || manualZoomRef.current) {
+                manualLimitsRef.current = {
+                    x: [chart.scales.x.min, chart.scales.x.max],
+                    yLeft: [chart.scales['y-left'].min, chart.scales['y-left'].max],
+                    yRight: [chart.scales['y-right'].min, chart.scales['y-right'].max],
+                };
+            }
         }
     }, []);
 
@@ -196,15 +210,26 @@ export default function MarketPage() {
         // Use both plugin and manual zoom flags to determine if we should skip autoscaling
         const isCurrentlyZoomed = isZoomedRef.current || manualZoomRef.current;
 
-        if (isCurrentlyZoomed) {
-            // If manual zoom is active, re-apply the manual limits to ensure they survive React re-renders
-            if (manualZoomRef.current && manualLimitsRef.current) {
-                chart.options.scales['y-left'].min = manualLimitsRef.current.yLeft[0];
-                chart.options.scales['y-left'].max = manualLimitsRef.current.yLeft[1];
-                chart.options.scales['y-right'].min = manualLimitsRef.current.yRight[0];
-                chart.options.scales['y-right'].max = manualLimitsRef.current.yRight[1];
+        if (isCurrentlyZoomed && manualLimitsRef.current) {
+            const lim = manualLimitsRef.current;
+            // Re-apply ALL saved limits to "lock" the viewport
+            if (lim.x) {
+                chart.options.scales.x.min = lim.x[0];
+                chart.options.scales.x.max = lim.x[1];
+            }
+            if (lim.yLeft) {
+                chart.options.scales['y-left'].min = lim.yLeft[0];
+                chart.options.scales['y-left'].max = lim.yLeft[1];
+            }
+            if (lim.yRight) {
+                chart.options.scales['y-right'].min = lim.yRight[0];
+                chart.options.scales['y-right'].max = lim.yRight[1];
             }
         } else {
+            // Ensure X axis is NOT locked if not zoomed
+            delete chart.options.scales.x.min;
+            delete chart.options.scales.x.max;
+
             if (firstEsfValue !== null) {
                 const baseRange = 50;
                 let esfMinVal = firstEsfValue - baseRange;
@@ -517,10 +542,7 @@ export default function MarketPage() {
         chart.options.scales['y-right'].max = newRangeRight[1];
 
         manualZoomRef.current = true;
-        manualLimitsRef.current = {
-            yLeft: [newRangeLeft[0], newRangeLeft[1]],
-            yRight: [newRangeRight[0], newRangeRight[1]]
-        };
+        updateZoomState();
         chart.update('none');
     };
 
@@ -555,10 +577,21 @@ export default function MarketPage() {
     };
     const handleResetZoom = () => {
         if (chartRef.current) {
-            chartRef.current.resetZoom();
+            const chart = chartRef.current;
+            chart.resetZoom();
             isZoomedRef.current = false;
             manualZoomRef.current = false;
-            manualLimitsRef.current = null;
+            manualLimitsRef.current = { x: null, yLeft: null, yRight: null };
+
+            // Explicitly clear all scale lockings
+            delete chart.options.scales.x.min;
+            delete chart.options.scales.x.max;
+            delete chart.options.scales['y-left'].min;
+            delete chart.options.scales['y-left'].max;
+            delete chart.options.scales['y-right'].min;
+            delete chart.options.scales['y-right'].max;
+
+            chart.update();
         }
     };
 
