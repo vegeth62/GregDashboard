@@ -147,6 +147,7 @@ export default function MarketPage() {
         yRight: [number, number] | null;
     }>({ x: null, yLeft: null, yRight: null });
     const vertZoomRef = useRef<{ active: boolean; startY: number; startRangeLeft: [number, number]; startRangeRight: [number, number] } | null>(null);
+    const horizZoomRef = useRef<{ active: boolean; startX: number; startRangeX: [any, any] } | null>(null);
 
     // ---- Auth check ----
     useEffect(() => {
@@ -205,6 +206,36 @@ export default function MarketPage() {
                 };
             }
         });
+
+        // Dynamic Min/Max lines
+        const esfVals = dataPoints.map(d => d.esf).filter(v => v !== null) as number[];
+        if (esfVals.length > 1) {
+            const min = Math.min(...esfVals);
+            const max = Math.max(...esfVals);
+            newAnnotations['esf-min'] = {
+                type: 'line', yMin: min, yMax: min,
+                yScaleID: 'y-right', borderColor: '#22c55e', borderWidth: 1, borderDash: [2, 4],
+            };
+            newAnnotations['esf-max'] = {
+                type: 'line', yMin: max, yMax: max,
+                yScaleID: 'y-right', borderColor: '#22c55e', borderWidth: 1, borderDash: [2, 4],
+            };
+        }
+
+        const vixVals = dataPoints.map(d => d.vix).filter(v => v !== null) as number[];
+        if (vixVals.length > 1) {
+            const min = Math.min(...vixVals);
+            const max = Math.max(...vixVals);
+            newAnnotations['vix-min'] = {
+                type: 'line', yMin: min, yMax: min,
+                yScaleID: 'y-left', borderColor: '#3b82f6', borderWidth: 1, borderDash: [2, 4],
+            };
+            newAnnotations['vix-max'] = {
+                type: 'line', yMin: max, yMax: max,
+                yScaleID: 'y-left', borderColor: '#3b82f6', borderWidth: 1, borderDash: [2, 4],
+            };
+        }
+
         chart.options.plugins.annotation.annotations = newAnnotations;
 
         // Use both plugin and manual zoom flags to determine if we should skip autoscaling
@@ -504,9 +535,9 @@ export default function MarketPage() {
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
 
-        // Check if mouse is over the right scale area
-        const scale = chart.scales['y-right'];
-        if (x >= scale.left && x <= scale.right) {
+        // Check if mouse is over the right scale area (Y-axes)
+        const yScale = chart.scales['y-right'];
+        if (x >= yScale.left && x <= yScale.right) {
             vertZoomRef.current = {
                 active: true,
                 startY: y,
@@ -515,40 +546,92 @@ export default function MarketPage() {
             };
             isZoomedRef.current = true;
         }
+
+        // Check if mouse is over the bottom scale area (X-axis)
+        const xScale = chart.scales.x;
+        if (y >= xScale.top && y <= xScale.bottom) {
+            horizZoomRef.current = {
+                active: true,
+                startX: x,
+                startRangeX: [xScale.min, xScale.max],
+            };
+            isZoomedRef.current = true;
+        }
     };
 
     const handleGlobalMouseMove = (e: MouseEvent) => {
-        if (!vertZoomRef.current || !vertZoomRef.current.active || !chartRef.current) return;
         const chart = chartRef.current;
-        const rect = chart.canvas.getBoundingClientRect();
-        const y = e.clientY - rect.top;
-        const deltaY = y - vertZoomRef.current.startY;
+        if (!chart) return;
 
-        // Sensibility factor
-        const factor = 1 + (deltaY / 200);
+        // Vertical Zoom (Y-axes)
+        if (vertZoomRef.current && vertZoomRef.current.active) {
+            const rect = chart.canvas.getBoundingClientRect();
+            const y = e.clientY - rect.top;
+            const deltaY = y - vertZoomRef.current.startY;
+            const factor = 1 + (deltaY / 200);
 
-        const zoomScale = (range: [number, number], f: number) => {
-            const center = (range[0] + range[1]) / 2;
-            const halfSize = ((range[1] - range[0]) / 2) * f;
-            return [center - halfSize, center + halfSize];
-        };
+            const zoomScale = (range: [number, number], f: number) => {
+                const center = (range[0] + range[1]) / 2;
+                const halfSize = ((range[1] - range[0]) / 2) * f;
+                return [center - halfSize, center + halfSize];
+            };
 
-        const newRangeLeft = zoomScale(vertZoomRef.current.startRangeLeft, factor);
-        const newRangeRight = zoomScale(vertZoomRef.current.startRangeRight, factor);
+            const newRangeLeft = zoomScale(vertZoomRef.current.startRangeLeft, factor);
+            const newRangeRight = zoomScale(vertZoomRef.current.startRangeRight, factor);
 
-        chart.options.scales['y-left'].min = newRangeLeft[0];
-        chart.options.scales['y-left'].max = newRangeLeft[1];
-        chart.options.scales['y-right'].min = newRangeRight[0];
-        chart.options.scales['y-right'].max = newRangeRight[1];
+            chart.options.scales['y-left'].min = newRangeLeft[0];
+            chart.options.scales['y-left'].max = newRangeLeft[1];
+            chart.options.scales['y-right'].min = newRangeRight[0];
+            chart.options.scales['y-right'].max = newRangeRight[1];
 
-        manualZoomRef.current = true;
-        updateZoomState();
-        chart.update('none');
+            manualZoomRef.current = true;
+            updateZoomState();
+            chart.update('none');
+        }
+
+        // Horizontal Zoom (X-axis)
+        if (horizZoomRef.current && horizZoomRef.current.active) {
+            const rect = chart.canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const deltaX = x - horizZoomRef.current.startX;
+
+            // For X-axis, since it's typically categorical or strings in our case, 
+            // we use the indices if it's numerical or special handling if mapped
+            // Chart.js scales have 'min' and 'max' as indices or values
+            const factor = 1 - (deltaX / 200); // Inverse for X drag intuition
+
+            const zoomX = (range: [any, any], f: number) => {
+                // Assuming numerical indices or timestamps that behave like numbers
+                const r0 = typeof range[0] === 'string' ? chart.scales.x.getDecimalForValue(range[0]) : range[0];
+                const r1 = typeof range[1] === 'string' ? chart.scales.x.getDecimalForValue(range[1]) : range[1];
+
+                const span = r1 - r0;
+                const center = (r0 + r1) / 2;
+                const newSpan = span * f;
+                return [center - newSpan / 2, center + newSpan / 2];
+            };
+
+            const newRangeX = zoomX(horizZoomRef.current.startRangeX, factor);
+            chart.options.scales.x.min = newRangeX[0];
+            chart.options.scales.x.max = newRangeX[1];
+
+            manualZoomRef.current = true;
+            updateZoomState();
+            chart.update('none');
+        }
     };
 
     const handleGlobalMouseUp = () => {
-        if (vertZoomRef.current) {
+        let updated = false;
+        if (vertZoomRef.current && vertZoomRef.current.active) {
             vertZoomRef.current.active = false;
+            updated = true;
+        }
+        if (horizZoomRef.current && horizZoomRef.current.active) {
+            horizZoomRef.current.active = false;
+            updated = true;
+        }
+        if (updated) {
             updateZoomState();
         }
     };
