@@ -9,7 +9,7 @@
 
 **Greg Dashboard** è un'applicazione web personale a uso esclusivo di **Gregorio** per:
 
-1. **Market Monitor** — monitoraggio in tempo reale di VIX (Volatility Index) e ES=F (S&P 500 Futures) con grafici interattivi, durante la finestra di trading 00:05–23:00 CET. Archiviazione e consultazione delle sessioni storiche per data.
+1. **Market Monitor** — monitoraggio in tempo reale di VIX (Volatility Index) e ES=F (S&P 500 Futures) con grafici interattivi, durante la finestra di trading 00:00–23:00 CET.
 2. **Finance Input** — registrazione manuale di transazioni finanziarie personali (entrate/uscite) in un CSV locale.
 
 **URL di produzione:** [https://vix-es-monitor.vercel.app](https://vix-es-monitor.vercel.app)
@@ -29,9 +29,7 @@ Prova Greg/
 │   │   ├── input/page.tsx       # Form inserimento transazioni
 │   │   └── api/
 │   │       ├── market/
-│   │       │   ├── route.ts     # API: dati live Yahoo Finance + archivio sessioni
-│   │       │   └── sessions/
-│   │       │       └── route.ts # API: lista sessioni archiviate
+│   │       │   └── route.ts     # API: dati da Supabase / Local JSON
 │   │       └── finance/
 │   │           └── route.ts     # API: salva transazione via Python script
 │   ├── next.config.ts           # transpilePackages: ['chartjs-plugin-zoom']
@@ -39,7 +37,7 @@ Prova Greg/
 │   └── .vercel/                 # Config Vercel (projectId linked)
 │
 ├── execution/                   # Script Python deterministici
-│   ├── fetch_market_data.py     # Fetch VIX + ES=F da yfinance (standalone, non usato dall'API)
+│   ├── tws_poller.py            # Fetch VIX + ES=F da IBKR TWS (Primary)
 │   └── save_transaction.py     # Salva transazione in .tmp/transactions.csv
 │
 ├── directives/
@@ -67,8 +65,8 @@ Prova Greg/
 | Grafici | Chart.js + react-chartjs-2 | 4.5.x |
 | Zoom grafico | chartjs-plugin-zoom | 2.2.x |
 | Annotazioni | chartjs-plugin-annotation | 3.1.x |
-| Data source | yahoo-finance2 (Node.js) | 3.13.x |
-| Python scripts | yfinance (Python) | — |
+| Data source | IBKR TWS (via tws_poller.py) | — |
+| Python scripts | ib_insync (Python) | — |
 | Deploy | Vercel | — |
 | Language | TypeScript + Python 3 | — |
 
@@ -103,11 +101,11 @@ Prova Greg/
 
 | Storage | Cosa contiene | Durata |
 |---|---|---|
-| `localStorage.marketData_YYYY-MM-DD` | Tutti i data points del giorno | Fino alla prossima 00:05 |
+| `localStorage.marketData_YYYY-MM-DD` | Tutti i data points del giorno | Fino alla prossima 00:00 |
 | `localStorage.marketRefLines` | Reference lines (R1/R2 up/down) | Permanente |
 | `localStorage.marketRefLineVisibility` | Visibilità delle reference lines | Permanente |
-| Disco: `../data/market/YYYY-MM-DD.json` | Archivio sessioni (locale) | Permanente |
-| `/tmp/market/YYYY-MM-DD.json` | Archivio sessioni (Vercel) | Volatile (cold start) |
+| Disco: `../data/market/YYYY-MM-DD.json` | Backup sessione corrente (locale) | Permanente |
+| `/tmp/market/YYYY-MM-DD.json` | Backup sessione corrente (Vercel) | Volatile (cold start) |
 
 ### 5.3 Flusso Mount della pagina `/market`
 
@@ -117,17 +115,12 @@ Prova Greg/
 4. Fetch `/api/market?history=true` (yfinance intraday) per colmare i gap
 5. Se dentro finestra oraria → start polling ogni 5s
 6. Watcher 30s per rilevare inizio/fine sessione
-7. Fetch `/api/market/sessions` per popolare il picker storico
 
 ### 5.4 API Routes
 
 #### `GET /api/market`
-- **No params** → prezzo live da `yahoo-finance2.quote()` + archivio su disco se 00:05–23:00
+- **No params** → prezzo live da `yahoo-finance2.quote()` + backup su disco se 00:00–23:00
 - **`?history=true`** → dati intraday da `yahoo-finance2.chart()` (da inizio giornata)
-- **`?date=YYYY-MM-DD`** → legge file JSON archivio per quella data
-
-#### `GET /api/market/sessions`
-- Lista tutti i file `.json` in `DATA_DIR`, ordine decrescente
 
 ### 5.5 Grafico
 
@@ -195,7 +188,7 @@ git add -A && git commit -m "..." && git push origin main
 | Sessioni storiche perse su Vercel | `/tmp` volatile su serverless | Integrare **Vercel KV** o **Firestore** |
 | Finance Input non funziona su Vercel | `child_process.spawn` no-go in serverless | Riscrivere `save_transaction.py` in TypeScript come API route |
 | Auth hardcoded | Soluzione semplice | OK per uso personale. Se multi-utente: JWT + DB |
-| `yahoo-finance2` può fallire per rate limiting | API non ufficiale | Retry con backoff o cache lato server |
+| `yahoo-finance2` può fallire per rate limiting | API non ufficiale | Passato a IBKR TWS (stabile) |
 
 ---
 

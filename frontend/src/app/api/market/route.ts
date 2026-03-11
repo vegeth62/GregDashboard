@@ -1,10 +1,7 @@
 import { NextResponse } from 'next/server';
-import YahooFinance from 'yahoo-finance2';
 import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
 import path from 'path';
-
-const yahooFinance = new (YahooFinance as any)();
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
@@ -90,55 +87,9 @@ export async function GET(request: Request) {
             }
             if (!data || data.length === 0) data = getLocalData(today);
 
-            // If local/Supabase is empty for today, fallback to yfinance for the first load
+            // If local/Supabase is empty for today, just return empty history
             if (!data || data.length === 0) {
-                const now = new Date();
-                const startOfDay = new Date(now);
-                startOfDay.setHours(0, 0, 0, 0);
-
-                const [vixChart, esfChart] = await Promise.all([
-                    yahooFinance.chart('^VIX', {
-                        period1: Math.floor(startOfDay.getTime() / 1000),
-                        interval: '1m'
-                    }) as any,
-                    yahooFinance.chart('ES=F', {
-                        period1: Math.floor(startOfDay.getTime() / 1000),
-                        interval: '1m'
-                    }) as any
-                ]);
-
-                if (!vixChart.quotes || !esfChart.quotes) {
-                    return NextResponse.json({ history: [] }, { status: 200 });
-                }
-
-                const esfMap = new Map();
-                esfChart.quotes.forEach((q: any) => {
-                    if (q.date && q.close !== null) {
-                        const timeKey = new Date(q.date).getTime();
-                        esfMap.set(timeKey, q.close);
-                    }
-                });
-
-                const history: any[] = [];
-                vixChart.quotes.forEach((q: any) => {
-                    if (q.date && q.close !== null) {
-                        const timeKey = new Date(q.date).getTime();
-                        if (esfMap.has(timeKey)) {
-                            history.push({
-                                time: new Date(q.date).toLocaleTimeString('it-IT', {
-                                    timeZone: 'Europe/Rome',
-                                    hour12: false,
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                    second: '2-digit'
-                                }),
-                                vix: Math.round(q.close * 100) / 100,
-                                esf: Math.round(esfMap.get(timeKey) * 100) / 100
-                            });
-                        }
-                    }
-                });
-                return NextResponse.json({ history }, { status: 200 });
+                return NextResponse.json({ history: [] }, { status: 200 });
             }
 
             return NextResponse.json({ history: formatHistory(data) }, { status: 200 });

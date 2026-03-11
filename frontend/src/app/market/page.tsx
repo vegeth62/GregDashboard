@@ -63,6 +63,10 @@ interface ReferenceLines {
     r2Down: string;
     r2Up: string;
     r1Up: string;
+    r1DownOb: string;
+    r2DownOb: string;
+    r2UpOb: string;
+    r1UpOb: string;
 }
 
 interface RefLineVisibility {
@@ -70,6 +74,10 @@ interface RefLineVisibility {
     r2Down: boolean;
     r2Up: boolean;
     r1Up: boolean;
+    r1DownOb: boolean;
+    r2DownOb: boolean;
+    r2UpOb: boolean;
+    r1UpOb: boolean;
 }
 
 // --- Helpers ---
@@ -100,34 +108,39 @@ export default function MarketPage() {
     const router = useRouter();
     const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
     const [dataPoints, setDataPoints] = useState<DataPoint[]>([]);
-    const [status, setStatus] = useState<'live' | 'paused' | 'historical' | 'connecting' | 'error'>('connecting');
+    const [status, setStatus] = useState<'live' | 'paused' | 'connecting' | 'error'>('connecting');
     const [lastUpdate, setLastUpdate] = useState<string>('');
     const [firstEsfValue, setFirstEsfValue] = useState<number | null>(null);
     const [showSettings, setShowSettings] = useState(false);
     const [pluginsReady, setPluginsReady] = useState(false);
     const isZoomedRef = useRef(false);
 
-    // Past sessions
-    const [showSessionPicker, setShowSessionPicker] = useState(false);
-    const [sessions, setSessions] = useState<string[]>([]);
-    const [selectedDate, setSelectedDate] = useState<string | null>(null); // null = live/today
 
     const [refLines, setRefLines] = useState<ReferenceLines>({
         r1Down: '',
         r2Down: '',
         r2Up: '',
         r1Up: '',
+        r1DownOb: '',
+        r2DownOb: '',
+        r2UpOb: '',
+        r1UpOb: '',
     });
     const [refLineVisibility, setRefLineVisibility] = useState<RefLineVisibility>({
         r1Down: true,
         r2Down: true,
         r2Up: true,
         r1Up: true,
+        r1DownOb: true,
+        r2DownOb: true,
+        r2UpOb: true,
+        r1UpOb: true,
     });
 
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const sessionWatchRef = useRef<NodeJS.Timeout | null>(null);
     const chartRef = useRef<any>(null);
+    const vertZoomRef = useRef<{ active: boolean; startY: number; startRangeLeft: [number, number]; startRangeRight: [number, number] } | null>(null);
 
     // ---- Auth check ----
     useEffect(() => {
@@ -156,30 +169,26 @@ export default function MarketPage() {
         chart.data.datasets[1].data = dataPoints.map((d) => d.vix);
 
         const newAnnotations: any = {};
-        if (refLines.r1Down && !isNaN(parseFloat(refLines.r1Down)) && refLineVisibility.r1Down) {
-            newAnnotations.r1Down = {
-                type: 'line', yMin: parseFloat(refLines.r1Down), yMax: parseFloat(refLines.r1Down),
-                yScaleID: 'y-right', borderColor: '#ef4444', borderWidth: 2, borderDash: [5, 5],
-            };
-        }
-        if (refLines.r2Down && !isNaN(parseFloat(refLines.r2Down)) && refLineVisibility.r2Down) {
-            newAnnotations.r2Down = {
-                type: 'line', yMin: parseFloat(refLines.r2Down), yMax: parseFloat(refLines.r2Down),
-                yScaleID: 'y-right', borderColor: '#f97316', borderWidth: 2, borderDash: [5, 5],
-            };
-        }
-        if (refLines.r2Up && !isNaN(parseFloat(refLines.r2Up)) && refLineVisibility.r2Up) {
-            newAnnotations.r2Up = {
-                type: 'line', yMin: parseFloat(refLines.r2Up), yMax: parseFloat(refLines.r2Up),
-                yScaleID: 'y-right', borderColor: '#06b6d4', borderWidth: 2, borderDash: [5, 5],
-            };
-        }
-        if (refLines.r1Up && !isNaN(parseFloat(refLines.r1Up)) && refLineVisibility.r1Up) {
-            newAnnotations.r1Up = {
-                type: 'line', yMin: parseFloat(refLines.r1Up), yMax: parseFloat(refLines.r1Up),
-                yScaleID: 'y-right', borderColor: '#3b82f6', borderWidth: 2, borderDash: [5, 5],
-            };
-        }
+        const baseConfigs = [
+            { key: 'r1Down', color: '#ef4444', dash: [] },
+            { key: 'r2Down', color: '#f97316', dash: [] },
+            { key: 'r2Up', color: '#06b6d4', dash: [] },
+            { key: 'r1Up', color: '#3b82f6', dash: [] },
+            { key: 'r1DownOb', color: '#ef4444', dash: [5, 5] },
+            { key: 'r2DownOb', color: '#f97316', dash: [5, 5] },
+            { key: 'r2UpOb', color: '#06b6d4', dash: [5, 5] },
+            { key: 'r1UpOb', color: '#3b82f6', dash: [5, 5] },
+        ];
+
+        baseConfigs.forEach(({ key, color, dash }) => {
+            const val = refLines[key as keyof ReferenceLines];
+            if (val && !isNaN(parseFloat(val)) && refLineVisibility[key as keyof RefLineVisibility]) {
+                newAnnotations[key] = {
+                    type: 'line', yMin: parseFloat(val), yMax: parseFloat(val),
+                    yScaleID: 'y-right', borderColor: color, borderWidth: 2, borderDash: dash,
+                };
+            }
+        });
         chart.options.plugins.annotation.annotations = newAnnotations;
 
         if (!isZoomedRef.current) {
@@ -189,14 +198,12 @@ export default function MarketPage() {
                 let esfMaxVal = firstEsfValue + baseRange;
 
                 const visibleRefValues: number[] = [];
-                if (refLines.r1Down && !isNaN(parseFloat(refLines.r1Down)) && refLineVisibility.r1Down)
-                    visibleRefValues.push(parseFloat(refLines.r1Down));
-                if (refLines.r2Down && !isNaN(parseFloat(refLines.r2Down)) && refLineVisibility.r2Down)
-                    visibleRefValues.push(parseFloat(refLines.r2Down));
-                if (refLines.r2Up && !isNaN(parseFloat(refLines.r2Up)) && refLineVisibility.r2Up)
-                    visibleRefValues.push(parseFloat(refLines.r2Up));
-                if (refLines.r1Up && !isNaN(parseFloat(refLines.r1Up)) && refLineVisibility.r1Up)
-                    visibleRefValues.push(parseFloat(refLines.r1Up));
+                Object.keys(refLines).forEach(k => {
+                    const key = k as keyof ReferenceLines;
+                    if (refLines[key] && !isNaN(parseFloat(refLines[key])) && refLineVisibility[key as keyof RefLineVisibility]) {
+                        visibleRefValues.push(parseFloat(refLines[key]));
+                    }
+                });
 
                 // Include actual ES=F data points in scale calculation
                 const esfValues = dataPoints.map(d => d.esf).filter(v => v !== null) as number[];
@@ -256,11 +263,17 @@ export default function MarketPage() {
     useEffect(() => {
         const saved = localStorage.getItem('marketRefLines');
         if (saved) {
-            try { setRefLines(JSON.parse(saved)); } catch { }
+            try {
+                const parsed = JSON.parse(saved);
+                setRefLines(prev => ({ ...prev, ...parsed }));
+            } catch { }
         }
         const savedVis = localStorage.getItem('marketRefLineVisibility');
         if (savedVis) {
-            try { setRefLineVisibility(JSON.parse(savedVis)); } catch { }
+            try {
+                const parsed = JSON.parse(savedVis);
+                setRefLineVisibility(prev => ({ ...prev, ...parsed }));
+            } catch { }
         }
     }, []);
 
@@ -280,54 +293,6 @@ export default function MarketPage() {
         } catch { }
     }, []);
 
-    // ---- Load sessions list ----
-    const loadSessions = useCallback(async () => {
-        try {
-            const res = await fetch('/api/market/sessions', { cache: 'no-store' });
-            if (!res.ok) return;
-            const data = await res.json();
-            if (data.sessions) setSessions(data.sessions);
-        } catch { }
-    }, []);
-
-    // ---- Load a specific past session ----
-    const loadHistoricalSession = useCallback(async (date: string) => {
-        // Stop live polling first
-        if (intervalRef.current) clearInterval(intervalRef.current);
-        if (sessionWatchRef.current) clearInterval(sessionWatchRef.current);
-
-        setStatus('connecting');
-        setSelectedDate(date);
-        setShowSessionPicker(false);
-
-        try {
-            const res = await fetch(`/api/market?date=${date}`, { cache: 'no-store' });
-            if (!res.ok) throw new Error('API error');
-            const data = await res.json();
-
-            if (data.history && data.history.length > 0) {
-                setDataPoints(data.history);
-                const firstValid = data.history.find((p: DataPoint) => p.esf !== null);
-                if (firstValid) setFirstEsfValue(firstValid.esf);
-                setLastUpdate(data.history[data.history.length - 1].time);
-            }
-            setStatus('historical');
-        } catch {
-            setStatus('error');
-        }
-    }, []);
-
-    // ---- Back to live mode ----
-    const backToLive = useCallback(() => {
-        setSelectedDate(null);
-        setDataPoints([]);
-        setFirstEsfValue(null);
-        setLastUpdate('');
-        setStatus('connecting');
-        // re-run the mount effect by triggering a state change; we handle this via a restart flag
-        // Instead, trigger the startup logic
-        window.location.reload();
-    }, []);
 
     // ---- Live data fetch ----
     const fetchData = useCallback(async () => {
@@ -373,7 +338,6 @@ export default function MarketPage() {
     // ---- Main mount logic ----
     useEffect(() => {
         if (!isAuthorized) return;
-        if (selectedDate !== null) return; // Historical mode; don't start live
 
         const startup = async () => {
             const todayKey = getTodayKey();
@@ -451,8 +415,6 @@ export default function MarketPage() {
                 }
             }, 30000); // check every 30s
 
-            // Load sessions list for the past sessions picker
-            loadSessions();
         };
 
         startup();
@@ -462,7 +424,7 @@ export default function MarketPage() {
             if (sessionWatchRef.current) clearInterval(sessionWatchRef.current);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isAuthorized, selectedDate]);
+    }, [isAuthorized]);
 
     // ---- Reference line handlers ----
     const handleRefLineChange = (key: keyof ReferenceLines, value: string) => {
@@ -493,6 +455,73 @@ export default function MarketPage() {
             chartRef.current.draw();
         }
     };
+
+    // ---- Vertical Zoom (Left Click on Scale) ----
+    const handleMouseDown = (e: React.MouseEvent) => {
+        if (e.button !== 0) return; // Left click only
+        const chart = chartRef.current;
+        if (!chart) return;
+
+        const rect = chart.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        // Check if mouse is over the right scale area
+        const scale = chart.scales['y-right'];
+        if (x >= scale.left && x <= scale.right) {
+            vertZoomRef.current = {
+                active: true,
+                startY: y,
+                startRangeLeft: [chart.scales['y-left'].min, chart.scales['y-left'].max],
+                startRangeRight: [chart.scales['y-right'].min, chart.scales['y-right'].max],
+            };
+            isZoomedRef.current = true;
+        }
+    };
+
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+        if (!vertZoomRef.current || !vertZoomRef.current.active || !chartRef.current) return;
+        const chart = chartRef.current;
+        const rect = chart.canvas.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        const deltaY = y - vertZoomRef.current.startY;
+
+        // Sensibility factor
+        const factor = 1 + (deltaY / 200);
+
+        const zoomScale = (range: [number, number], f: number) => {
+            const center = (range[0] + range[1]) / 2;
+            const halfSize = ((range[1] - range[0]) / 2) * f;
+            return [center - halfSize, center + halfSize];
+        };
+
+        const newRangeLeft = zoomScale(vertZoomRef.current.startRangeLeft, factor);
+        const newRangeRight = zoomScale(vertZoomRef.current.startRangeRight, factor);
+
+        chart.options.scales['y-left'].min = newRangeLeft[0];
+        chart.options.scales['y-left'].max = newRangeLeft[1];
+        chart.options.scales['y-right'].min = newRangeRight[0];
+        chart.options.scales['y-right'].max = newRangeRight[1];
+
+        isZoomedRef.current = true;
+        chart.update('none');
+    };
+
+    const handleGlobalMouseUp = () => {
+        if (vertZoomRef.current) {
+            vertZoomRef.current.active = false;
+            updateZoomState();
+        }
+    };
+
+    useEffect(() => {
+        window.addEventListener('mousemove', handleGlobalMouseMove);
+        window.addEventListener('mouseup', handleGlobalMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', handleGlobalMouseMove);
+            window.removeEventListener('mouseup', handleGlobalMouseUp);
+        };
+    }, []);
 
     // ---- Zoom controls ----
     const handleZoomIn = (axis: 'x' | 'y') => {
@@ -556,12 +585,12 @@ export default function MarketPage() {
                 zoom: {
                     wheel: { enabled: true, speed: 0.1 },
                     pinch: { enabled: true },
-                    mode: 'xy' as const,
+                    mode: 'x' as const,
                     onZoomComplete: updateZoomState,
                 },
                 pan: {
                     enabled: true,
-                    mode: 'xy' as const,
+                    mode: 'x' as const,
                     modifierKey: null as any,
                     onPanComplete: updateZoomState,
                 },
@@ -572,7 +601,7 @@ export default function MarketPage() {
             },
             title: {
                 display: true,
-                text: selectedDate ? `VIX & ES=F — Session ${selectedDate}` : 'VIX & ES=F — Daily Monitor',
+                text: 'VIX & ES=F — Daily Monitor',
                 color: '#e2e8f0',
                 font: { size: 18, weight: 'bold' as const },
                 padding: { bottom: 20 },
@@ -587,6 +616,7 @@ export default function MarketPage() {
         scales: {
             x: {
                 display: true,
+                offset: true,
                 title: { display: true, text: 'Time', color: '#64748b', font: { size: 12 } },
                 ticks: { color: '#64748b', maxRotation: 45, autoSkip: true, maxTicksLimit: 30, font: { size: 10 } },
                 grid: { color: 'rgba(51, 65, 85, 0.3)' },
@@ -615,7 +645,7 @@ export default function MarketPage() {
                 grid: { drawOnChartArea: false },
             },
         },
-    }), [updateZoomState, selectedDate]);
+    }), [updateZoomState]);
 
     const latestVix = dataPoints.length > 0 ? dataPoints[dataPoints.length - 1].vix : null;
     const latestEsf = dataPoints.length > 0 ? dataPoints[dataPoints.length - 1].esf : null;
@@ -631,7 +661,6 @@ export default function MarketPage() {
     const statusConfig = {
         live: { label: 'LIVE', color: 'bg-green-500/20 text-green-400 border-green-500/30', dot: 'bg-green-400 animate-pulse' },
         paused: { label: 'Outside Trading Hours', color: 'bg-slate-500/20 text-slate-400 border-slate-500/30', dot: 'bg-slate-400' },
-        historical: { label: `Historical: ${selectedDate}`, color: 'bg-purple-500/20 text-purple-400 border-purple-500/30', dot: 'bg-purple-400' },
         connecting: { label: 'Connecting...', color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30', dot: 'bg-yellow-400 animate-pulse' },
         error: { label: 'Error', color: 'bg-red-500/20 text-red-400 border-red-500/30', dot: 'bg-red-400' },
     };
@@ -639,14 +668,39 @@ export default function MarketPage() {
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-4 md:p-8">
-            <div className="max-w-7xl mx-auto">
+            <div className="w-full max-w-[1920px] mx-auto">
                 {/* Header */}
                 <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-6">
-                    <div>
-                        <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-green-400 bg-clip-text text-transparent">
-                            Market Monitor
-                        </h1>
-                        <p className="text-slate-400 text-sm mt-1">
+                    <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-4">
+                            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-green-400 bg-clip-text text-transparent">
+                                Market Monitor
+                            </h1>
+                            <div className="flex items-center gap-2 ml-2">
+                                <div className="flex items-center gap-2 px-2 py-1 bg-blue-500/10 border border-blue-500/20 rounded-md">
+                                    <span className="text-[10px] font-bold text-blue-400/80 tracking-tight">VIX</span>
+                                    <span className="text-lg font-bold text-blue-400 leading-none">
+                                        {latestVix !== null ? latestVix.toFixed(2) : '—'}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-2 px-2 py-1 bg-green-500/10 border border-green-500/20 rounded-md">
+                                    <div className="flex flex-col items-end">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[10px] font-bold text-green-400/80 tracking-tight">ES</span>
+                                            <span className="text-lg font-bold text-green-400 leading-none">
+                                                {latestEsf !== null ? latestEsf.toLocaleString('en-US') : '—'}
+                                            </span>
+                                        </div>
+                                        {firstEsfValue !== null && (
+                                            <span className="text-[10px] text-slate-500 font-medium leading-none mt-0.5">
+                                                Ø {firstEsfValue.toFixed(0)}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <p className="text-slate-400 text-sm mt-0.5">
                             VIX & S&P 500 Futures — Daily History & Real-Time
                         </p>
                     </div>
@@ -660,63 +714,6 @@ export default function MarketPage() {
                             ⚙️ Ref Lines
                         </button>
 
-                        {/* Past Sessions button */}
-                        <div className="relative">
-                            <button
-                                onClick={() => {
-                                    loadSessions();
-                                    setShowSessionPicker(!showSessionPicker);
-                                }}
-                                className="px-3 py-1.5 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded-lg text-xs font-medium transition-colors"
-                            >
-                                📅 Past Sessions
-                            </button>
-
-                            {showSessionPicker && (
-                                <div className="absolute right-0 mt-2 w-48 bg-slate-800 border border-slate-600 rounded-xl shadow-xl z-50 overflow-hidden">
-                                    <div className="px-3 py-2 border-b border-slate-700">
-                                        <p className="text-xs font-semibold text-slate-300">Archived Sessions</p>
-                                    </div>
-                                    <div className="max-h-60 overflow-y-auto">
-                                        {/* Live/Today option */}
-                                        <button
-                                            onClick={() => {
-                                                setShowSessionPicker(false);
-                                                if (selectedDate !== null) backToLive();
-                                            }}
-                                            className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-700 transition-colors flex items-center gap-2 ${selectedDate === null ? 'text-green-400 font-semibold' : 'text-slate-300'}`}
-                                        >
-                                            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse inline-block"></span>
-                                            Today (Live)
-                                        </button>
-                                        {/* Past dates */}
-                                        {sessions.length === 0 ? (
-                                            <div className="px-3 py-3 text-xs text-slate-500 text-center">No archived sessions yet</div>
-                                        ) : (
-                                            sessions.map((date) => (
-                                                <button
-                                                    key={date}
-                                                    onClick={() => loadHistoricalSession(date)}
-                                                    className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-700 transition-colors ${selectedDate === date ? 'text-purple-400 font-semibold bg-purple-500/10' : 'text-slate-300'}`}
-                                                >
-                                                    {date}
-                                                </button>
-                                            ))
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Back to Live button (only in historical mode) */}
-                        {selectedDate !== null && (
-                            <button
-                                onClick={backToLive}
-                                className="px-3 py-1.5 bg-green-500/20 hover:bg-green-500/30 border border-green-500/40 rounded-lg text-xs font-medium text-green-400 transition-colors"
-                            >
-                                ▶ Back to Live
-                            </button>
-                        )}
 
                         {/* Status badge */}
                         <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border ${sc.color}`}>
@@ -741,38 +738,24 @@ export default function MarketPage() {
                     </div>
                 )}
 
-                {/* Historical view banner */}
-                {status === 'historical' && (
-                    <div className="mb-5 bg-purple-900/20 border border-purple-500/30 rounded-xl px-5 py-3 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <span className="text-xl">📁</span>
-                            <div>
-                                <p className="text-sm font-medium text-purple-300">Viewing archived session: <span className="font-bold">{selectedDate}</span></p>
-                                <p className="text-xs text-purple-400/70 mt-0.5">Live polling is paused. Click "Back to Live" to return.</p>
-                            </div>
-                        </div>
-                        <button
-                            onClick={backToLive}
-                            className="px-4 py-1.5 bg-green-500/20 hover:bg-green-500/30 border border-green-500/40 rounded-lg text-xs font-medium text-green-400 transition-colors whitespace-nowrap ml-4"
-                        >
-                            ▶ Back to Live
-                        </button>
-                    </div>
-                )}
 
                 {/* Reference Lines Panel */}
                 {showSettings && (
                     <div className="bg-slate-800/80 backdrop-blur-sm border border-slate-700/50 rounded-xl p-5 mb-6">
                         <h3 className="text-lg font-semibold mb-4 text-slate-200">Reference Lines (ES=F)</h3>
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
                             {([
-                                { key: 'r1Down', label: 'R1 Down (Red)', colorClass: 'text-red-400', ringClass: 'focus:ring-red-500/50' },
-                                { key: 'r2Down', label: 'R2 Down (Orange)', colorClass: 'text-orange-400', ringClass: 'focus:ring-orange-500/50' },
-                                { key: 'r2Up', label: 'R2 Up (Cyan)', colorClass: 'text-cyan-400', ringClass: 'focus:ring-cyan-500/50' },
-                                { key: 'r1Up', label: 'R1 Up (Blue)', colorClass: 'text-blue-400', ringClass: 'focus:ring-blue-500/50' },
+                                { key: 'r1Down', label: 'R1 Down', colorClass: 'text-red-400', ringClass: 'focus:ring-red-500/50' },
+                                { key: 'r1DownOb', label: 'R1D OB (Dash)', colorClass: 'text-red-400/70', ringClass: 'focus:ring-red-500/50' },
+                                { key: 'r2Down', label: 'R2 Down', colorClass: 'text-orange-400', ringClass: 'focus:ring-orange-500/50' },
+                                { key: 'r2DownOb', label: 'R2D OB (Dash)', colorClass: 'text-orange-400/70', ringClass: 'focus:ring-orange-500/50' },
+                                { key: 'r2Up', label: 'R2 Up', colorClass: 'text-cyan-400', ringClass: 'focus:ring-cyan-500/50' },
+                                { key: 'r2UpOb', label: 'R2U OB (Dash)', colorClass: 'text-cyan-400/70', ringClass: 'focus:ring-cyan-500/50' },
+                                { key: 'r1Up', label: 'R1 Up', colorClass: 'text-blue-400', ringClass: 'focus:ring-blue-500/50' },
+                                { key: 'r1UpOb', label: 'R1U OB (Dash)', colorClass: 'text-blue-400/70', ringClass: 'focus:ring-blue-500/50' },
                             ] as const).map(({ key, label, colorClass, ringClass }) => (
-                                <div key={key}>
-                                    <div className="flex items-center justify-between mb-1.5">
+                                <div key={key} className="bg-slate-900/30 p-2 rounded-lg border border-slate-700/30">
+                                    <div className="flex items-center justify-between mb-1">
                                         <label className={`block text-xs font-medium ${colorClass}`}>{label}</label>
                                         <button
                                             onClick={() => toggleRefLineVisibility(key)}
@@ -794,7 +777,7 @@ export default function MarketPage() {
                                     <input
                                         type="number"
                                         step="0.01"
-                                        value={refLines[key]}
+                                        value={refLines[key] || ''}
                                         onChange={(e) => handleRefLineChange(key, e.target.value)}
                                         placeholder="e.g. 6850"
                                         className={`w-full px-3 py-2 bg-slate-900/50 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 ${ringClass}`}
@@ -805,43 +788,6 @@ export default function MarketPage() {
                     </div>
                 )}
 
-                {/* KPI Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div className="bg-slate-800/60 backdrop-blur-sm border border-slate-700/50 rounded-xl p-5">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <p className="text-slate-400 text-sm font-medium">VIX — Volatility Index</p>
-                                <p className="text-3xl font-bold text-blue-400 mt-1">
-                                    {latestVix !== null ? latestVix.toFixed(2) : '—'}
-                                </p>
-                            </div>
-                            <div className="w-12 h-12 rounded-lg bg-blue-500/15 flex items-center justify-center">
-                                <svg className="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                                </svg>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="bg-slate-800/60 backdrop-blur-sm border border-slate-700/50 rounded-xl p-5">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <p className="text-slate-400 text-sm font-medium">ES=F — S&P 500 Futures</p>
-                                <p className="text-3xl font-bold text-green-400 mt-1">
-                                    {latestEsf !== null ? `$${latestEsf.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}
-                                </p>
-                                {firstEsfValue !== null && (
-                                    <p className="text-xs text-slate-500 mt-1">Center: ${firstEsfValue.toFixed(2)}</p>
-                                )}
-                            </div>
-                            <div className="w-12 h-12 rounded-lg bg-green-500/15 flex items-center justify-center">
-                                <svg className="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                                </svg>
-                            </div>
-                        </div>
-                    </div>
-                </div>
 
                 {/* Chart */}
                 <div className="bg-slate-800/60 backdrop-blur-sm border border-slate-700/50 rounded-xl p-4 md:p-6">
@@ -867,9 +813,11 @@ export default function MarketPage() {
                     </div>
 
                     <div
-                        className="h-[500px] cursor-crosshair"
+                        className="h-[calc(100vh-240px)] min-h-[400px] cursor-crosshair"
                         onMouseMove={handleMouseMove}
                         onMouseOut={handleMouseOut}
+                        onMouseDown={handleMouseDown}
+                        onContextMenu={(e) => e.preventDefault()}
                     >
                         {dataPoints.length > 0 ? (
                             <Line
@@ -895,9 +843,9 @@ export default function MarketPage() {
 
                 {/* Footer */}
                 <div className="mt-4 text-center text-slate-600 text-xs">
-                    Data refreshed every 5 seconds • Active window: 00:00–23:00 CET • Source: Yahoo Finance
+                    Data refreshed every 5 seconds • Active window: 00:00–23:00 CET • Source: IBKR TWS
                     <br />
-                    <span className="text-slate-500">💡 Tip: Use mouse wheel to zoom, drag to pan • 📅 Use Past Sessions to review historical days</span>
+                    <span className="text-slate-500">💡 Tip: Use mouse wheel to zoom, drag to pan</span>
                 </div>
             </div>
         </div>
