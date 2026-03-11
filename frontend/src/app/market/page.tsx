@@ -165,8 +165,8 @@ export default function MarketPage() {
         const annotations: any = {};
 
         // Find local maxima and minima in ES=F
-        // A peak/trough is relative to 5 points on each side
-        const window = 5;
+        // A peak/trough is relative to a sliding window
+        const window = 3; // Reduced from 5 to be more sensitive
         const peaks: { index: number; time: string; esf: number; vix: number }[] = [];
         const troughs: { index: number; time: string; esf: number; vix: number }[] = [];
 
@@ -178,9 +178,10 @@ export default function MarketPage() {
             let isTrough = true;
             for (let j = i - window; j <= i + window; j++) {
                 if (i === j) continue;
-                if (points[j].esf !== null) {
-                    if (points[j].esf! >= current.esf!) isPeak = false;
-                    if (points[j].esf! <= current.esf!) isTrough = false;
+                const other = points[j];
+                if (other.esf !== null) {
+                    if (other.esf! > current.esf!) isPeak = false; // changed >= to >
+                    if (other.esf! < current.esf!) isTrough = false; // changed <= to <
                 }
             }
             if (isPeak) peaks.push({ index: i, time: current.time, esf: current.esf!, vix: current.vix! });
