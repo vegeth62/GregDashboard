@@ -141,6 +141,7 @@ export default function MarketPage() {
     const sessionWatchRef = useRef<NodeJS.Timeout | null>(null);
     const chartRef = useRef<any>(null);
     const manualZoomRef = useRef(false);
+    const manualLimitsRef = useRef<{ yLeft: [number, number]; yRight: [number, number] } | null>(null);
     const vertZoomRef = useRef<{ active: boolean; startY: number; startRangeLeft: [number, number]; startRangeRight: [number, number] } | null>(null);
 
     // ---- Auth check ----
@@ -195,7 +196,15 @@ export default function MarketPage() {
         // Use both plugin and manual zoom flags to determine if we should skip autoscaling
         const isCurrentlyZoomed = isZoomedRef.current || manualZoomRef.current;
 
-        if (!isCurrentlyZoomed) {
+        if (isCurrentlyZoomed) {
+            // If manual zoom is active, re-apply the manual limits to ensure they survive React re-renders
+            if (manualZoomRef.current && manualLimitsRef.current) {
+                chart.options.scales['y-left'].min = manualLimitsRef.current.yLeft[0];
+                chart.options.scales['y-left'].max = manualLimitsRef.current.yLeft[1];
+                chart.options.scales['y-right'].min = manualLimitsRef.current.yRight[0];
+                chart.options.scales['y-right'].max = manualLimitsRef.current.yRight[1];
+            }
+        } else {
             if (firstEsfValue !== null) {
                 const baseRange = 50;
                 let esfMinVal = firstEsfValue - baseRange;
@@ -508,6 +517,10 @@ export default function MarketPage() {
         chart.options.scales['y-right'].max = newRangeRight[1];
 
         manualZoomRef.current = true;
+        manualLimitsRef.current = {
+            yLeft: [newRangeLeft[0], newRangeLeft[1]],
+            yRight: [newRangeRight[0], newRangeRight[1]]
+        };
         chart.update('none');
     };
 
@@ -545,6 +558,7 @@ export default function MarketPage() {
             chartRef.current.resetZoom();
             isZoomedRef.current = false;
             manualZoomRef.current = false;
+            manualLimitsRef.current = null;
         }
     };
 
