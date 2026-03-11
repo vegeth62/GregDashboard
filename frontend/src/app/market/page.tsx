@@ -187,13 +187,22 @@ export default function MarketPage() {
             if (isTrough) troughs.push({ index: i, time: current.time, esf: current.esf!, vix: current.vix! });
         }
 
+        // Helper for time difference (HH:mm:ss)
+        const getDiffMinutes = (t1: string, t2: string) => {
+            const [h1, m1, s1] = t1.split(':').map(Number);
+            const [h2, m2, s2] = t2.split(':').map(Number);
+            const d1 = new Date(0, 0, 0, h1, m1, s1);
+            const d2 = new Date(0, 0, 0, h2, m2, s2);
+            return Math.abs(d2.getTime() - d1.getTime()) / (1000 * 60);
+        };
+
         // Bearish Divergence: Price HH, VIX HH (or simply VIX not making LL)
         for (let i = 1; i < peaks.length; i++) {
             const p1 = peaks[i - 1];
             const p2 = peaks[i];
 
             // If price makes a higher high, VIX should make a lower low
-            if (p2.esf > p1.esf && p2.vix > p1.vix) {
+            if (p2.esf > p1.esf && p2.vix > p1.vix && getDiffMinutes(p1.time, p2.time) >= 3) {
                 annotations[`div-bear-${i}`] = {
                     type: 'box',
                     xMin: p1.time,
@@ -218,7 +227,7 @@ export default function MarketPage() {
             const t2 = troughs[i];
 
             // If price makes a lower low, VIX should make a higher high
-            if (t2.esf < t1.esf && t2.vix < t1.vix) {
+            if (t2.esf < t1.esf && t2.vix < t1.vix && getDiffMinutes(t1.time, t2.time) >= 3) {
                 annotations[`div-bull-${i}`] = {
                     type: 'box',
                     xMin: t1.time,
