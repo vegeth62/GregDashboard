@@ -159,6 +159,87 @@ export default function MarketPage() {
         }
     }, [router]);
 
+    // ---- Divergence Detection ----
+    const detectDivergences = (points: DataPoint[]) => {
+        if (points.length < 10) return [];
+        const annotations: any = {};
+
+        // Find local maxima and minima in ES=F
+        // A peak/trough is relative to 5 points on each side
+        const window = 5;
+        const peaks: { index: number; time: string; esf: number; vix: number }[] = [];
+        const troughs: { index: number; time: string; esf: number; vix: number }[] = [];
+
+        for (let i = window; i < points.length - window; i++) {
+            const current = points[i];
+            if (current.esf === null || current.vix === null) continue;
+
+            let isPeak = true;
+            let isTrough = true;
+            for (let j = i - window; j <= i + window; j++) {
+                if (i === j) continue;
+                if (points[j].esf !== null) {
+                    if (points[j].esf! >= current.esf!) isPeak = false;
+                    if (points[j].esf! <= current.esf!) isTrough = false;
+                }
+            }
+            if (isPeak) peaks.push({ index: i, time: current.time, esf: current.esf!, vix: current.vix! });
+            if (isTrough) troughs.push({ index: i, time: current.time, esf: current.esf!, vix: current.vix! });
+        }
+
+        // Bearish Divergence: Price HH, VIX HH (or simply VIX not making LL)
+        for (let i = 1; i < peaks.length; i++) {
+            const p1 = peaks[i - 1];
+            const p2 = peaks[i];
+
+            // If price makes a higher high, VIX should make a lower low
+            if (p2.esf > p1.esf && p2.vix > p1.vix) {
+                annotations[`div-bear-${i}`] = {
+                    type: 'box',
+                    xMin: p1.time,
+                    xMax: p2.time,
+                    backgroundColor: 'rgba(234, 179, 8, 0.15)',
+                    borderColor: 'rgba(234, 179, 8, 0.4)',
+                    borderWidth: 1,
+                    label: {
+                        display: true,
+                        content: 'Bear Div',
+                        position: 'start',
+                        color: 'rgba(234, 179, 8, 0.8)',
+                        font: { size: 10 }
+                    }
+                };
+            }
+        }
+
+        // Bullish Divergence: Price LL, VIX LL (or simply VIX not making HH)
+        for (let i = 1; i < troughs.length; i++) {
+            const t1 = troughs[i - 1];
+            const t2 = troughs[i];
+
+            // If price makes a lower low, VIX should make a higher high
+            if (t2.esf < t1.esf && t2.vix < t1.vix) {
+                annotations[`div-bull-${i}`] = {
+                    type: 'box',
+                    xMin: t1.time,
+                    xMax: t2.time,
+                    backgroundColor: 'rgba(234, 179, 8, 0.15)',
+                    borderColor: 'rgba(234, 179, 8, 0.4)',
+                    borderWidth: 1,
+                    label: {
+                        display: true,
+                        content: 'Bull Div',
+                        position: 'start',
+                        color: 'rgba(234, 179, 8, 0.8)',
+                        font: { size: 10 }
+                    }
+                };
+            }
+        }
+
+        return annotations;
+    };
+
     // ---- Zoom ----
     const updateZoomState = useCallback(() => {
         if (chartRef.current) {
@@ -235,6 +316,10 @@ export default function MarketPage() {
                 yScaleID: 'y-left', borderColor: '#3b82f6', borderWidth: 1, borderDash: [2, 4],
             };
         }
+
+        // Divergence boxes
+        const divAnnotations = detectDivergences(dataPoints);
+        Object.assign(newAnnotations, divAnnotations);
 
         chart.options.plugins.annotation.annotations = newAnnotations;
 
