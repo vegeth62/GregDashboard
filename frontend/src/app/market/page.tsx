@@ -961,10 +961,7 @@ export default function MarketPage() {
                         updateZoomState();
                     },
                 },
-                limits: {
-                    x: { min: 'original' as const, max: 'original' as const },
-                    y: { min: 'original' as const, max: 'original' as const },
-                },
+                // Removed limits to allow free panning in any direction
             },
             title: {
                 display: true,
