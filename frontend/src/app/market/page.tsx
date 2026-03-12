@@ -31,6 +31,41 @@ ChartJS.register(
     annotationPlugin
 );
 
+// Custom scale background plugin — draws a lighter bg behind each axis area
+const scaleBackgroundPlugin = {
+    id: 'scaleBackground',
+    beforeDraw: (chart: any) => {
+        const { ctx, chartArea, scales, width, height } = chart;
+        if (!chartArea) return;
+
+        // An even lighter slate color for the scales background
+        const bgColor = 'rgba(51, 65, 85, 0.8)'; // slate-700 with 80% opacity
+
+        ctx.save();
+        ctx.fillStyle = bgColor;
+
+        // Left scale (VIX)
+        if (scales['y-left']) {
+            const s = scales['y-left'];
+            ctx.fillRect(0, 0, s.right, height);
+        }
+
+        // Right scale (ES=F)
+        if (scales['y-right']) {
+            const s = scales['y-right'];
+            ctx.fillRect(s.left, 0, width - s.left, height);
+        }
+
+        // Bottom scale (Time)
+        if (scales.x) {
+            const s = scales.x;
+            ctx.fillRect(chartArea.left, s.top, chartArea.right - chartArea.left, height - s.top);
+        }
+
+        ctx.restore();
+    }
+};
+
 // Custom crosshair plugin
 const crosshairPlugin = {
     id: 'crosshair',
@@ -949,8 +984,8 @@ export default function MarketPage() {
             x: {
                 display: true,
                 offset: true,
-                title: { display: true, text: 'Time', color: '#64748b', font: { size: 12 } },
-                ticks: { color: '#64748b', maxRotation: 45, autoSkip: true, maxTicksLimit: 30, font: { size: 10 } },
+                title: { display: true, text: 'Time', color: '#94a3b8', font: { size: 12 } },
+                ticks: { color: '#94a3b8', maxRotation: 45, autoSkip: true, maxTicksLimit: 30, font: { size: 10 } },
                 grid: { color: 'rgba(51, 65, 85, 0.3)' },
             },
             'y-left': {
@@ -958,7 +993,7 @@ export default function MarketPage() {
                 position: 'left' as const,
                 display: true,
                 title: { display: true, text: 'VIX', color: '#3b82f6', font: { size: 13, weight: 'bold' as const } },
-                ticks: { color: '#cbd5e1', font: { size: 12 }, padding: 8 },
+                ticks: { color: '#e2e8f0', font: { size: 12 }, padding: 8 },
                 grid: { color: 'rgba(59, 130, 246, 0.08)' },
             },
             'y-right': {
@@ -967,7 +1002,7 @@ export default function MarketPage() {
                 display: true,
                 title: { display: true, text: 'ES=F ($)', color: '#22c55e', font: { size: 13, weight: 'bold' as const } },
                 ticks: {
-                    color: '#cbd5e1',
+                    color: '#e2e8f0',
                     font: { size: 12 },
                     padding: 8,
                     callback: function (value: string | number) {
@@ -1168,7 +1203,7 @@ export default function MarketPage() {
                                 ref={chartRef}
                                 data={chartData}
                                 options={chartOptions}
-                                plugins={[crosshairPlugin]}
+                                plugins={[scaleBackgroundPlugin, crosshairPlugin]}
                             />
                         ) : (
                             <div className="flex items-center justify-center h-full">
