@@ -114,7 +114,7 @@ export default function MarketPage() {
     const [showSettings, setShowSettings] = useState(false);
     const [pluginsReady, setPluginsReady] = useState(false);
     const isZoomedRef = useRef(false);
-
+    const [showDivergences, setShowDivergences] = useState(true);
 
     const [refLines, setRefLines] = useState<ReferenceLines>({
         r1Down: '',
@@ -146,7 +146,9 @@ export default function MarketPage() {
         yLeft: [number, number] | null;
         yRight: [number, number] | null;
     }>({ x: null, yLeft: null, yRight: null });
-    const vertZoomRef = useRef<{ active: boolean; startY: number; startRangeLeft: [number, number]; startRangeRight: [number, number] } | null>(null);
+    const manualYLeftZoomingRef = useRef(false);
+    const manualYRightZoomingRef = useRef(false);
+    const vertZoomRef = useRef<{ active: boolean; axis: 'y-left' | 'y-right'; startY: number; startRange: [number, number] } | null>(null);
     const horizZoomRef = useRef<{ active: boolean; startX: number; startRangeX: [any, any] } | null>(null);
 
     // ---- Auth check ----
@@ -156,8 +158,16 @@ export default function MarketPage() {
             router.replace('/login');
         } else {
             setIsAuthorized(true);
+            // Load divergence preference
+            const savedDiv = localStorage.getItem('marketShowDivergences');
+            if (savedDiv !== null) setShowDivergences(savedDiv === 'true');
         }
     }, [router]);
+
+    // Save divergence preference
+    useEffect(() => {
+        localStorage.setItem('marketShowDivergences', String(showDivergences));
+    }, [showDivergences]);
 
     // ---- Divergence Detection ----
     const detectDivergences = (points: DataPoint[]) => {
@@ -257,14 +267,20 @@ export default function MarketPage() {
     const updateZoomState = useCallback(() => {
         if (chartRef.current) {
             const chart = chartRef.current;
-            isZoomedRef.current = chart.isZoomedOrPanned();
-
             // If zoomed (either by plugin or manually), save ALL current limits
             if (isZoomedRef.current || manualZoomRef.current) {
+                const yLeftMin = chart.scales['y-left'].min;
+                const yLeftMax = chart.scales['y-left'].max;
+                const yRightMin = chart.scales['y-right'].min;
+                const yRightMax = chart.scales['y-right'].max;
+
+                // We only lock an axis if its range is significantly different from "auto" or if it was manually touched.
+                // However, for simplicity and reliability, we'll store both if either is zoomed, 
+                // but the imperative update will decide whether to USE them based on manualZoomRef.
                 manualLimitsRef.current = {
                     x: [chart.scales.x.min, chart.scales.x.max],
-                    yLeft: [chart.scales['y-left'].min, chart.scales['y-left'].max],
-                    yRight: [chart.scales['y-right'].min, chart.scales['y-right'].max],
+                    yLeft: [yLeftMin, yLeftMax],
+                    yRight: [yRightMin, yRightMax],
                 };
             }
         }
@@ -331,39 +347,35 @@ export default function MarketPage() {
         }
 
         // Divergence boxes
-        const divAnnotations = detectDivergences(dataPoints);
-        Object.assign(newAnnotations, divAnnotations);
+        if (showDivergences) {
+            const divAnnotations = detectDivergences(dataPoints);
+            Object.assign(newAnnotations, divAnnotations);
+        }
 
         chart.options.plugins.annotation.annotations = newAnnotations;
 
-        // Use both plugin and manual zoom flags to determine if we should skip autoscaling
-        const isCurrentlyZoomed = isZoomedRef.current || manualZoomRef.current;
+        // Determine independent locks
+        const xLocked = (isZoomedRef.current || manualZoomRef.current) && manualLimitsRef.current?.x;
+        const yLeftLocked = manualYLeftZoomingRef.current && manualLimitsRef.current?.yLeft;
+        const yRightLocked = manualYRightZoomingRef.current && manualLimitsRef.current?.yRight;
 
-        if (isCurrentlyZoomed && manualLimitsRef.current) {
-            const lim = manualLimitsRef.current;
-            // Re-apply ALL saved limits to "lock" the viewport
-            if (lim.x) {
-                chart.options.scales.x.min = lim.x[0];
-                chart.options.scales.x.max = lim.x[1];
-            }
-            if (lim.yLeft) {
-                chart.options.scales['y-left'].min = lim.yLeft[0];
-                chart.options.scales['y-left'].max = lim.yLeft[1];
-            }
-            if (lim.yRight) {
-                chart.options.scales['y-right'].min = lim.yRight[0];
-                chart.options.scales['y-right'].max = lim.yRight[1];
-            }
+        // Apply X lock
+        if (xLocked && manualLimitsRef.current?.x) {
+            chart.options.scales.x.min = manualLimitsRef.current.x[0];
+            chart.options.scales.x.max = manualLimitsRef.current.x[1];
         } else {
-            // Ensure X axis is NOT locked if not zoomed
             delete chart.options.scales.x.min;
             delete chart.options.scales.x.max;
+        }
 
-            if (firstEsfValue !== null) {
-                const baseRange = 50;
-                let esfMinVal = firstEsfValue - baseRange;
-                let esfMaxVal = firstEsfValue + baseRange;
+        // Handle Y Scales (Auto-scaling vs Lock)
+        if (firstEsfValue !== null) {
+            const baseRange = 50;
+            let esfMinVal = firstEsfValue - baseRange;
+            let esfMaxVal = firstEsfValue + baseRange;
 
+            // 1. Calculate ES=F (y-right) range if NOT locked
+            if (!yRightLocked) {
                 const visibleRefValues: number[] = [];
                 Object.keys(refLines).forEach(k => {
                     const key = k as keyof ReferenceLines;
@@ -372,7 +384,6 @@ export default function MarketPage() {
                     }
                 });
 
-                // Include actual ES=F data points in scale calculation
                 const esfValues = dataPoints.map(d => d.esf).filter(v => v !== null) as number[];
                 if (esfValues.length > 0) {
                     const dataMin = Math.min(...esfValues);
@@ -387,24 +398,38 @@ export default function MarketPage() {
                     esfMinVal = Math.min(esfMinVal, minRef - 5);
                     esfMaxVal = Math.max(esfMaxVal, maxRef + 5);
                 }
-
                 chart.options.scales['y-right'].min = esfMinVal;
                 chart.options.scales['y-right'].max = esfMaxVal;
+            } else if (manualLimitsRef.current?.yRight) {
+                chart.options.scales['y-right'].min = manualLimitsRef.current.yRight[0];
+                chart.options.scales['y-right'].max = manualLimitsRef.current.yRight[1];
+            }
 
+            // 2. Calculate VIX (y-left) range if NOT locked
+            if (!yLeftLocked) {
                 const vixValues = dataPoints.map(d => d.vix).filter(v => v !== null) as number[];
                 if (vixValues.length > 0) {
                     const vixMin = Math.min(...vixValues);
                     const vixMax = Math.max(...vixValues);
                     const vixCenter = (vixMin + vixMax) / 2;
                     const vixDataRange = vixMax - vixMin;
+                    
+                    // Use price range for dynamic VIX scaling if price is also auto-scaling
+                    const currentEsfMin = chart.options.scales['y-right'].min;
+                    const currentEsfMax = chart.options.scales['y-right'].max;
+                    const actualEsfRange = currentEsfMax - currentEsfMin;
                     const baseEsfRange = baseRange * 2;
-                    const actualEsfRange = esfMaxVal - esfMinVal;
+                    
                     const expansionFactor = actualEsfRange / baseEsfRange;
                     const baseVixRange = Math.max(vixDataRange * 1.2, 2);
                     const expandedVixRange = baseVixRange * expansionFactor;
+                    
                     chart.options.scales['y-left'].min = vixCenter - (expandedVixRange / 2);
                     chart.options.scales['y-left'].max = vixCenter + (expandedVixRange / 2);
                 }
+            } else if (manualLimitsRef.current?.yLeft) {
+                chart.options.scales['y-left'].min = manualLimitsRef.current.yLeft[0];
+                chart.options.scales['y-left'].max = manualLimitsRef.current.yLeft[1];
             }
         }
 
@@ -623,9 +648,45 @@ export default function MarketPage() {
         }
     };
 
-    // ---- Vertical Zoom (Left Click on Scale) ----
+    // ---- Wheel Zoom (only when mouse is over the X axis) ----
+    const handleWheel = (e: React.WheelEvent) => {
+        const chart = chartRef.current;
+        if (!chart) return;
+
+        const rect = chart.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        // Only zoom if mouse is over the X axis area
+        const xScale = chart.scales.x;
+        if (y < xScale.top || y > xScale.bottom || x < xScale.left || x > xScale.right) return;
+
+        e.preventDefault();
+
+        const factor = e.deltaY < 0 ? 0.85 : 1.18; // scroll up = zoom in, down = zoom out
+
+        const r0Raw = xScale.min;
+        const r1Raw = xScale.max;
+        // getDecimalForValue for string labels; otherwise use numeric directly
+        const r0 = typeof r0Raw === 'string' ? xScale.getDecimalForValue(r0Raw) : r0Raw;
+        const r1 = typeof r1Raw === 'string' ? xScale.getDecimalForValue(r1Raw) : r1Raw;
+
+        const span = r1 - r0;
+        const center = (r0 + r1) / 2;
+        const newSpan = span * factor;
+
+        chart.options.scales.x.min = center - newSpan / 2;
+        chart.options.scales.x.max = center + newSpan / 2;
+
+        isZoomedRef.current = true;
+        manualZoomRef.current = true;
+        updateZoomState();
+        chart.update('none');
+    };
+
+    // ---- Vertical Zoom (Left Click on Scale) and Pan (Right Click) ----
     const handleMouseDown = (e: React.MouseEvent) => {
-        if (e.button !== 0) return; // Left click only
+        if (e.button !== 0 && e.button !== 2) return; // Allow left and right click
         const chart = chartRef.current;
         if (!chart) return;
 
@@ -634,26 +695,45 @@ export default function MarketPage() {
         const y = e.clientY - rect.top;
 
         // Check if mouse is over the right scale area (Y-axes)
+        // Check if mouse is over the left scale area (VIX)
+        const vScale = chart.scales['y-left'];
+        let isScaleClick = false;
+
+        if (x >= vScale.left && x <= vScale.right) {
+            vertZoomRef.current = {
+                active: true,
+                axis: 'y-left',
+                startY: y,
+                startRange: [chart.scales['y-left'].min, chart.scales['y-left'].max],
+            };
+            isZoomedRef.current = true;
+            isScaleClick = true;
+        }
+
+        // Check if mouse is over the right scale area (Price)
         const yScale = chart.scales['y-right'];
         if (x >= yScale.left && x <= yScale.right) {
             vertZoomRef.current = {
                 active: true,
+                axis: 'y-right',
                 startY: y,
-                startRangeLeft: [chart.scales['y-left'].min, chart.scales['y-left'].max],
-                startRangeRight: [chart.scales['y-right'].min, chart.scales['y-right'].max],
+                startRange: [chart.scales['y-right'].min, chart.scales['y-right'].max],
             };
             isZoomedRef.current = true;
+            isScaleClick = true;
         }
 
         // Check if mouse is over the bottom scale area (X-axis)
+        // Only allow Left-click to trigger zoom
         const xScale = chart.scales.x;
-        if (y >= xScale.top && y <= xScale.bottom) {
+        if (e.button === 0 && y >= xScale.top && y <= xScale.bottom) {
             horizZoomRef.current = {
                 active: true,
                 startX: x,
                 startRangeX: [xScale.min, xScale.max],
             };
             isZoomedRef.current = true;
+            isScaleClick = true;
         }
     };
 
@@ -674,15 +754,16 @@ export default function MarketPage() {
                 return [center - halfSize, center + halfSize];
             };
 
-            const newRangeLeft = zoomScale(vertZoomRef.current.startRangeLeft, factor);
-            const newRangeRight = zoomScale(vertZoomRef.current.startRangeRight, factor);
+            const newRange = zoomScale(vertZoomRef.current.startRange, factor);
+            const axis = vertZoomRef.current.axis;
 
-            chart.options.scales['y-left'].min = newRangeLeft[0];
-            chart.options.scales['y-left'].max = newRangeLeft[1];
-            chart.options.scales['y-right'].min = newRangeRight[0];
-            chart.options.scales['y-right'].max = newRangeRight[1];
+            chart.options.scales[axis].min = newRange[0];
+            chart.options.scales[axis].max = newRange[1];
 
             manualZoomRef.current = true;
+            if (axis === 'y-left') manualYLeftZoomingRef.current = true;
+            if (axis === 'y-right') manualYRightZoomingRef.current = true;
+            
             updateZoomState();
             chart.update('none');
         }
@@ -693,27 +774,26 @@ export default function MarketPage() {
             const x = e.clientX - rect.left;
             const deltaX = x - horizZoomRef.current.startX;
 
-            // For X-axis, since it's typically categorical or strings in our case, 
-            // we use the indices if it's numerical or special handling if mapped
-            // Chart.js scales have 'min' and 'max' as indices or values
+            // Regular X Zoom (left click over X axis region)
             const factor = 1 - (deltaX / 200); // Inverse for X drag intuition
 
             const zoomX = (range: [any, any], f: number) => {
-                // Assuming numerical indices or timestamps that behave like numbers
                 const r0 = typeof range[0] === 'string' ? chart.scales.x.getDecimalForValue(range[0]) : range[0];
                 const r1 = typeof range[1] === 'string' ? chart.scales.x.getDecimalForValue(range[1]) : range[1];
 
                 const span = r1 - r0;
                 const center = (r0 + r1) / 2;
                 const newSpan = span * f;
-                return [center - newSpan / 2, center + newSpan / 2];
+                const newR0 = center - newSpan / 2;
+                const newR1 = center + newSpan / 2;
+                return [newR0, newR1];
             };
 
             const newRangeX = zoomX(horizZoomRef.current.startRangeX, factor);
             chart.options.scales.x.min = newRangeX[0];
             chart.options.scales.x.max = newRangeX[1];
-
             manualZoomRef.current = true;
+
             updateZoomState();
             chart.update('none');
         }
@@ -747,12 +827,22 @@ export default function MarketPage() {
     const handleZoomIn = (axis: 'x' | 'y') => {
         if (chartRef.current) {
             chartRef.current.zoom(axis === 'x' ? { x: 1.2 } : { y: 1.2 });
+            if (axis === 'y') {
+                manualYLeftZoomingRef.current = true;
+                manualYRightZoomingRef.current = true;
+                manualZoomRef.current = true;
+            }
             updateZoomState();
         }
     };
     const handleZoomOut = (axis: 'x' | 'y') => {
         if (chartRef.current) {
             chartRef.current.zoom(axis === 'x' ? { x: 0.8 } : { y: 0.8 });
+            if (axis === 'y') {
+                manualYLeftZoomingRef.current = true;
+                manualYRightZoomingRef.current = true;
+                manualZoomRef.current = true;
+            }
             updateZoomState();
         }
     };
@@ -762,6 +852,8 @@ export default function MarketPage() {
             chart.resetZoom();
             isZoomedRef.current = false;
             manualZoomRef.current = false;
+            manualYLeftZoomingRef.current = false;
+            manualYRightZoomingRef.current = false;
             manualLimitsRef.current = { x: null, yLeft: null, yRight: null };
 
             // Explicitly clear all scale lockings
@@ -816,16 +908,23 @@ export default function MarketPage() {
             annotation: { annotations: {} },
             zoom: {
                 zoom: {
-                    wheel: { enabled: true, speed: 0.1 },
+                    wheel: { enabled: false }, // Wheel zoom handled manually (only on X axis)
+                    drag: { enabled: false }, // Disable native drag zoom to ensure custom panning works
                     pinch: { enabled: true },
                     mode: 'x' as const,
                     onZoomComplete: updateZoomState,
                 },
                 pan: {
-                    enabled: true,
-                    mode: 'x' as const,
-                    modifierKey: null as any,
-                    onPanComplete: updateZoomState,
+                    enabled: true, // Enable native pan plugin for smooth left-drag panning
+                    mode: 'xy' as const,
+                    modifierKey: undefined,
+                    onPanComplete: () => {
+                        isZoomedRef.current = true;
+                        manualZoomRef.current = true;
+                        manualYLeftZoomingRef.current = true;
+                        manualYRightZoomingRef.current = true;
+                        updateZoomState();
+                    },
                 },
                 limits: {
                     x: { min: 'original' as const, max: 'original' as const },
@@ -1037,6 +1136,17 @@ export default function MarketPage() {
                             <button onClick={() => handleZoomIn('y')} className="w-8 h-8 flex items-center justify-center bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded text-slate-300 hover:text-white transition-colors" title="Zoom In Y">+</button>
                         </div>
                         <button
+                            onClick={() => setShowDivergences(!showDivergences)}
+                            className={`px-3 py-1.5 border rounded-lg text-xs font-medium transition-colors ml-4 ${showDivergences
+                                ? 'bg-yellow-500/20 text-yellow-500 border-yellow-500/30 hover:bg-yellow-500/30'
+                                : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700'
+                                }`}
+                            title={showDivergences ? 'Hide Divergences' : 'Show Divergences'}
+                        >
+                            {showDivergences ? '🔔 Div ON' : '🔕 Div OFF'}
+                        </button>
+
+                        <button
                             onClick={handleResetZoom}
                             className="px-3 py-1.5 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded-lg text-xs font-medium text-slate-300 hover:text-white transition-colors"
                             title="Reset Zoom"
@@ -1050,6 +1160,7 @@ export default function MarketPage() {
                         onMouseMove={handleMouseMove}
                         onMouseOut={handleMouseOut}
                         onMouseDown={handleMouseDown}
+                        onWheel={handleWheel}
                         onContextMenu={(e) => e.preventDefault()}
                     >
                         {dataPoints.length > 0 ? (
@@ -1078,7 +1189,7 @@ export default function MarketPage() {
                 <div className="mt-4 text-center text-slate-600 text-xs">
                     Data refreshed every 5 seconds • Active window: 00:00–23:00 CET • Source: IBKR TWS
                     <br />
-                    <span className="text-slate-500">💡 Tip: Use mouse wheel to zoom, drag to pan</span>
+                    <span className="text-slate-500">💡 Tip: Rotella sull&apos;asse X = zoom orizzontale • Trascina grafico = pan completo • Trascina assi Y = scala verticale</span>
                 </div>
             </div>
         </div>
