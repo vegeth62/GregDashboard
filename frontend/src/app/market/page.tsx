@@ -139,6 +139,31 @@ function isTradingJustStarted() {
     return now.getHours() === 0 && now.getMinutes() === 5;
 }
 
+function calculateEMA(data: (number | null)[], period: number = 20) {
+    if (data.length === 0) return [];
+    const ema: (number | null)[] = [];
+    const k = 2 / (period + 1);
+    let prevEma: number | null = null;
+
+    for (let i = 0; i < data.length; i++) {
+        const value = data[i];
+        if (value === null) {
+            ema.push(null);
+            continue;
+        }
+
+        if (prevEma === null) {
+            // Find first non-null values to start SMA then EMA, or just start with first value
+            prevEma = value;
+            ema.push(prevEma);
+        } else {
+            prevEma = (value * k) + (prevEma * (1 - k));
+            ema.push(prevEma);
+        }
+    }
+    return ema;
+}
+
 export default function MarketPage() {
     const router = useRouter();
     const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
@@ -150,6 +175,7 @@ export default function MarketPage() {
     const [pluginsReady, setPluginsReady] = useState(false);
     const isZoomedRef = useRef(false);
     const [showDivergences, setShowDivergences] = useState(true);
+    const [showTrends, setShowTrends] = useState(false);
 
     const [refLines, setRefLines] = useState<ReferenceLines>({
         r1Down: '',
@@ -196,6 +222,9 @@ export default function MarketPage() {
             // Load divergence preference
             const savedDiv = localStorage.getItem('marketShowDivergences');
             if (savedDiv !== null) setShowDivergences(savedDiv === 'true');
+            // Load trends preference
+            const savedTrends = localStorage.getItem('marketShowTrends');
+            if (savedTrends !== null) setShowTrends(savedTrends === 'true');
         }
     }, [router]);
 
@@ -203,6 +232,11 @@ export default function MarketPage() {
     useEffect(() => {
         localStorage.setItem('marketShowDivergences', String(showDivergences));
     }, [showDivergences]);
+
+    // Save trends preference
+    useEffect(() => {
+        localStorage.setItem('marketShowTrends', String(showTrends));
+    }, [showTrends]);
 
     // ---- Divergence Detection ----
     const detectDivergences = (points: DataPoint[]) => {
@@ -329,6 +363,16 @@ export default function MarketPage() {
         chart.data.labels = dataPoints.map((d) => d.time);
         chart.data.datasets[0].data = dataPoints.map((d) => d.esf);
         chart.data.datasets[1].data = dataPoints.map((d) => d.vix);
+
+        if (showTrends) {
+            const esfTrend = calculateEMA(dataPoints.map(d => d.esf), 20);
+            const vixTrend = calculateEMA(dataPoints.map(d => d.vix), 20);
+            chart.data.datasets[2].data = esfTrend;
+            chart.data.datasets[3].data = vixTrend;
+        } else {
+            chart.data.datasets[2].data = [];
+            chart.data.datasets[3].data = [];
+        }
 
         const newAnnotations: any = {};
         const baseConfigs = [
@@ -469,7 +513,7 @@ export default function MarketPage() {
         }
 
         chart.update('none');
-    }, [dataPoints, firstEsfValue, refLines, refLineVisibility]);
+    }, [dataPoints, firstEsfValue, refLines, refLineVisibility, showTrends]);
 
     // ---- Plugins (zoom) ----
     useEffect(() => {
@@ -931,6 +975,28 @@ export default function MarketPage() {
                 yAxisID: 'y-left',
                 fill: false,
             },
+            {
+                label: 'ES Trend',
+                data: [] as (number | null)[],
+                borderColor: '#22c55e',
+                borderWidth: 1.5,
+                borderDash: [5, 5],
+                pointRadius: 0,
+                tension: 0.4,
+                yAxisID: 'y-right',
+                fill: false,
+            },
+            {
+                label: 'VIX Trend',
+                data: [] as (number | null)[],
+                borderColor: '#3b82f6',
+                borderWidth: 1.5,
+                borderDash: [5, 5],
+                pointRadius: 0,
+                tension: 0.4,
+                yAxisID: 'y-left',
+                fill: false,
+            },
         ],
     }), []);
 
@@ -1176,6 +1242,17 @@ export default function MarketPage() {
                             title={showDivergences ? 'Hide Divergences' : 'Show Divergences'}
                         >
                             {showDivergences ? '🔔 Div ON' : '🔕 Div OFF'}
+                        </button>
+
+                        <button
+                            onClick={() => setShowTrends(!showTrends)}
+                            className={`px-3 py-1.5 border rounded-lg text-xs font-medium transition-colors ml-2 ${showTrends
+                                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30'
+                                : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700'
+                                }`}
+                            title={showTrends ? 'Hide Trends' : 'Show Trends'}
+                        >
+                            {showTrends ? '📈 Trend ON' : '📉 Trend OFF'}
                         </button>
 
                         <button

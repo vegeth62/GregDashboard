@@ -125,6 +125,10 @@ export async function GET(request: Request) {
                 }
             }
 
+            if (vixPrice === null || esfPrice === null) {
+                return NextResponse.json({ error: 'No data available for today. Please ensure the poller is running.' }, { status: 404 });
+            }
+
             const now = new Date();
             return NextResponse.json({
                 timestamp: now.toISOString(),
