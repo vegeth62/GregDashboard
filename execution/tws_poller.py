@@ -27,7 +27,7 @@ SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
 
 # Determine paths relative to this script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(SCRIPT_DIR, '..', 'data', 'market')
+DATA_DIR = os.path.join(SCRIPT_DIR, '..', 'frontend', 'data', 'market')
 
 def ensure_data_dir():
     if not os.path.exists(DATA_DIR):

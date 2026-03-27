@@ -28,7 +28,7 @@ export async function GET(request: Request) {
 
         const getLocalData = (dateStr: string) => {
             try {
-                const dataPath = path.join(process.cwd(), '..', 'data', 'market', `${dateStr}.json`);
+                const dataPath = path.join(process.cwd(), 'data', 'market', `${dateStr}.json`);
                 if (fs.existsSync(dataPath)) {
                     const content = fs.readFileSync(dataPath, 'utf-8');
                     return JSON.parse(content);
