@@ -120,12 +120,25 @@ def main():
     ib.qualifyContracts(esf_contract)
     esf_ticker = ib.reqMktData(esf_contract, '', False, False)
 
-    ib.sleep(2) # Wait for initial data
+    # SPX Index for Options logic (VolTide)
+    spx_contract = Index('SPX', 'CBOE')
+    ib.qualifyContracts(spx_contract)
+    spx_ticker = ib.reqMktData(spx_contract, '', False, False)
+
+    # Initialize option greeks variables
+    vol_tide_score = 100.0
+    cone_up = None
+    cone_down = None
+    last_skew_update = 0
+    option_tickers = [] # [atm, put90, call120]
+    
+    ib.sleep(3) # Wait for initial data
 
     while True:
         now = datetime.now()
         hour = now.hour
         minute = now.minute
+        timestamp = now.timestamp()
         
         is_active = (hour == 0 and minute >= 5) or (START_HOUR + 1 <= hour < END_HOUR)
         
@@ -136,16 +149,100 @@ def main():
             # We get marketPrice() which uses last price, or bid/ask average if last price is not available
             vix = vix_ticker.marketPrice()
             esf = esf_ticker.marketPrice()
+            spx = spx_ticker.marketPrice()
+            
+            # 1. Update Option Selection every 15 minutes (or if none selected)
+            if (timestamp - last_skew_update > 900 or not option_tickers) and spx == spx and spx > 0:
+                print(f"[{now.strftime('%H:%M:%S')}] Updating Option Skew targets (SPX at {spx})...")
+                
+                # Fetch chain
+                chains = ib.reqSecDefOptParams(spx_contract.symbol, '', spx_contract.secType, spx_contract.conId)
+                if chains:
+                    # Preference: SPX (Standard) then SPXW (Weekly)
+                    chain = next((c for c in chains if c.exchange == 'CBOE' and c.tradingClass == 'SPX'), None)
+                    if not chain:
+                        chain = next((c for c in chains if c.exchange == 'CBOE'), None)
+                    
+                    if chain:
+                        # Find nearest weekly/monthly expiration (at least 2 days out, at most 30)
+                        expirations = sorted(chain.expirations)
+                        target_exp = expirations[0] 
+                        for exp in expirations:
+                            # Simple logic: closest to 7-10 days
+                            try:
+                                days = (datetime.strptime(exp, '%Y%m%d') - datetime.now()).days
+                                if days >= 2:
+                                    target_exp = exp
+                                    break
+                            except: continue
+                        
+                        # Strikes (Ensure we stay within bounds of what TWS offers)
+                        strikes = sorted(chain.strikes)
+                        target_90 = spx * 0.90
+                        target_120 = spx * 1.20
+                        
+                        atm_strike = min(strikes, key=lambda x: abs(x - spx))
+                        
+                        # Find best strikes for skew analysis
+                        put90_strike = min(strikes, key=lambda x: abs(x - target_90))
+                        call120_strike = min(strikes, key=lambda x: abs(x - target_120))
+                        
+                        trading_class = chain.tradingClass
+                        atm_c = Option('SPX', target_exp, atm_strike, 'C', 'CBOE', multiplier='100', tradingClass=trading_class)
+                        put90_c = Option('SPX', target_exp, put90_strike, 'P', 'CBOE', multiplier='100', tradingClass=trading_class)
+                        call120_c = Option('SPX', target_exp, call120_strike, 'C', 'CBOE', multiplier='100', tradingClass=trading_class)
+                        
+                        print(f"Qualifying: Exp={target_exp}, ATM={atm_strike}, P90={put90_strike}, C120={call120_strike} ({trading_class})")
+                        qualified = ib.qualifyContracts(atm_c, put90_c, call120_c)
+                        
+                        # Cancel old
+                        for t in option_tickers:
+                            ib.cancelMktData(t.contract)
+                            
+                        # Request new (with greeks - 106)
+                        option_tickers = []
+                        if atm_c in qualified: option_tickers.append(ib.reqMktData(atm_c, '106', False, False))
+                        if put90_c in qualified: option_tickers.append(ib.reqMktData(put90_c, '106', False, False))
+                        if call120_c in qualified: option_tickers.append(ib.reqMktData(call120_c, '106', False, False))
+                        
+                        last_skew_update = timestamp
+                        print(f"Active Tickers: {len(option_tickers)}/{3} (Qualified: {[c.strike for c in qualified]})")
+
+            # 2. Calculate VolTide Score
+            if len(option_tickers) >= 2:
+                # Find the Put 90 and Call 120 (if they exist in tickers)
+                put_t = next((t for t in option_tickers if t.contract.right == 'P'), None)
+                call_t = next((t for t in option_tickers if t.contract.right == 'C' and t.contract.strike > spx), None)
+                atm_t = next((t for t in option_tickers if t.contract.right == 'C' and t.contract.strike <= spx), None)
+                
+                # Use modelGreeks safely
+                put_iv = put_t.modelGreeks.impliedVol if (put_t and put_t.modelGreeks and put_t.modelGreeks.impliedVol) else None
+                call_iv = call_t.modelGreeks.impliedVol if (call_t and call_t.modelGreeks and call_t.modelGreeks.impliedVol) else None
+                atm_iv = atm_t.modelGreeks.impliedVol if (atm_t and atm_t.modelGreeks and atm_t.modelGreeks.impliedVol) else None
+                
+                if put_iv and call_iv and call_iv > 0:
+                    vol_tide_score = round((put_iv / call_iv) * 100, 3)
+                
+                # 3. Straddle Cone Projection (using ATM IV)
+                if atm_iv and atm_iv > 0:
+                    move = atm_iv * esf * 0.052 # sqrt(1/365)
+                    cone_up = round(esf + move, 2)
+                    cone_down = round(esf - move, 2)
             
             # Check if vix/esf are valid numbers, not NaN or 0
-            # IB uses nan for missing data initially
             if vix == vix and esf == esf and vix > 0 and esf > 0:
-                # Format to 2 decimal places
                 vix_rounded = round(float(vix), 2)
                 esf_rounded = round(float(esf), 2)
-
                 time_str = now.strftime('%H:%M:%S')
-                point = {"time": time_str, "vix": vix_rounded, "esf": esf_rounded}
+                
+                point = {
+                    "time": time_str, 
+                    "vix": vix_rounded, 
+                    "esf": esf_rounded,
+                    "volTide": vol_tide_score,
+                    "coneUp": cone_up,
+                    "coneDown": cone_down
+                }
                 
                 # Save locally
                 append_to_session_file(get_today_key(), point)
@@ -153,7 +250,7 @@ def main():
                 # Push to Cloud
                 push_to_supabase(point)
                 
-                print(f"[{time_str}] Saved (Local + Cloud): VIX={vix_rounded}, ES=F={esf_rounded}")
+                print(f"[{time_str}] VIX={vix_rounded}, ES=F={esf_rounded}, VolTide={vol_tide_score}")
             else:
                 print(f"[{now.strftime('%H:%M:%S')}] Waiting for valid market quotes (VIX: {vix}, ES: {esf})")
         else:

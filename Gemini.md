@@ -124,11 +124,16 @@ Prova Greg/
 
 ### 5.5 Grafico
 
-- **Chart.js** con doppio asse Y: `y-left` (VIX, blu) e `y-right` (ES=F, verde)
-- **Zoom**: `chartjs-plugin-zoom` — wheel zoom + pinch + pan. Caricato dinamicamente (`import()`) per evitare SSR issues
-- **Aggiornamento imperativo**: i dati vengono iniettati direttamente nell'istanza di Chart.js (`chart.data.labels = ...`) per preservare lo stato di zoom durante il polling
-- **Crosshair**: plugin custom disegna linee verticale/orizzontale che seguono il mouse
-- **Annotazioni**: reference lines orizzontali configurabili (R1 Down, R2 Down, R2 Up, R1 Up) con colori dedicati
+- **Colors & Palette**:
+  - **ES=F**: Yellow (`#facc15`) — Main price action.
+  - **VIX**: Blue (`#3b82f6`) — Volatility monitoring.
+  - **Background**: Deep Charcoal/Black (`#0c0d10`).
+- **Auto-Scrolling Logic**:
+  - If zoomed/panned but at the "right edge", the chart shifts forward with new data.
+  - If manually panned back, tracking locks until "RESTORE LIVE VIEW" is clicked.
+- **Price Tags**: Custom plugin draws current values on Y-axes (Yellow/Blue).
+- **Chart.js**: Doppio asse Y, zoom/pan su asse X, crosshair con labels.
+- **Removed Indicators**: VolTide and Trends (EMA) have been removed for a cleaner look.
 
 ---
 

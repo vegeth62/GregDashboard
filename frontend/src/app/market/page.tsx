@@ -32,37 +32,79 @@ ChartJS.register(
 );
 
 // Custom scale background plugin — draws a lighter bg behind each axis area
+// Scale area background - subtle dark shade
 const scaleBackgroundPlugin = {
     id: 'scaleBackground',
     beforeDraw: (chart: any) => {
         const { ctx, chartArea, scales, width, height } = chart;
         if (!chartArea) return;
-
-        // An even lighter slate color for the scales background
-        const bgColor = 'rgba(51, 65, 85, 0.8)'; // slate-700 with 80% opacity
-
+        const bgColor = 'rgba(12, 13, 16, 0.4)'; 
         ctx.save();
         ctx.fillStyle = bgColor;
-
-        // Left scale (VIX)
         if (scales['y-left']) {
             const s = scales['y-left'];
             ctx.fillRect(0, 0, s.right, height);
         }
-
-        // Right scale (ES=F)
         if (scales['y-right']) {
             const s = scales['y-right'];
             ctx.fillRect(s.left, 0, width - s.left, height);
         }
-
-        // Bottom scale (Time)
         if (scales.x) {
             const s = scales.x;
             ctx.fillRect(chartArea.left, s.top, chartArea.right - chartArea.left, height - s.top);
         }
-
         ctx.restore();
+    }
+};
+
+// Current Price Tags Plugin - Draws the yellow/blue tags on Y axes
+const priceTagPlugin = {
+    id: 'priceTag',
+    afterDraw: (chart: any) => {
+        const { ctx, scales, data } = chart;
+        if (!data.datasets[0].data.length) return;
+
+        const drawTag = (axisId: string, value: number, color: string, textColor: string = '#000') => {
+            const scale = scales[axisId];
+            if (!scale) return;
+            const y = scale.getPixelForValue(value);
+            const text = axisId === 'y-right' ? value.toLocaleString() : value.toFixed(2);
+            
+            ctx.save();
+            ctx.font = 'bold 12px Arial';
+            const textWidth = ctx.measureText(text).width;
+            const tagWidth = textWidth + 12;
+            const tagHeight = 20;
+            const x = axisId === 'y-right' ? scale.left : scale.right - tagWidth;
+
+            // Draw box
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y - tagHeight / 2, tagWidth, tagHeight);
+
+            // Draw text
+            ctx.fillStyle = textColor;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, x + tagWidth / 2, y);
+            
+            // Draw horizontal dotted line to the tag
+            ctx.beginPath();
+            ctx.setLineDash([2, 4]);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            ctx.moveTo(axisId === 'y-right' ? chart.chartArea.right : chart.chartArea.left, y);
+            ctx.lineTo(axisId === 'y-right' ? scale.left : scale.right, y);
+            ctx.stroke();
+            
+            ctx.restore();
+        };
+
+        const lastIdx = data.datasets[0].data.length - 1;
+        const esfVal = data.datasets[0].data[lastIdx];
+        const vixVal = data.datasets[1].data[lastIdx];
+
+        if (esfVal !== null) drawTag('y-right', esfVal, '#facc15'); // Yellow for ES
+        if (vixVal !== null) drawTag('y-left', vixVal, '#3b82f6', '#fff'); // Blue for VIX
     }
 };
 
@@ -71,17 +113,39 @@ const crosshairPlugin = {
     id: 'crosshair',
     afterDraw: (chart: any) => {
         if (chart.crosshair && chart.crosshair.x !== undefined && chart.crosshair.y !== undefined) {
-            const { ctx, chartArea: { top, bottom, left, right } } = chart;
+            const { ctx, chartArea: { top, bottom, left, right }, scales } = chart;
             ctx.save();
+            
+            // Draw lines
             ctx.beginPath();
-            ctx.setLineDash([3, 3]);
+            ctx.setLineDash([4, 4]);
             ctx.lineWidth = 1;
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
             ctx.moveTo(chart.crosshair.x, top);
             ctx.lineTo(chart.crosshair.x, bottom);
             ctx.moveTo(left, chart.crosshair.y);
             ctx.lineTo(right, chart.crosshair.y);
             ctx.stroke();
+
+            // Draw axis labels
+            ctx.setLineDash([]);
+            ctx.font = '11px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            // X-axis label
+            const xValue = scales.x.getValueForPixel(chart.crosshair.x);
+            const xLabel = scales.x.getLabelForValue(xValue);
+            if (xLabel) {
+                const tw = ctx.measureText(xLabel).width + 10;
+                ctx.fillStyle = '#2a2e39';
+                ctx.fillRect(chart.crosshair.x - tw/2, bottom, tw, 20);
+                ctx.fillStyle = '#d1d4dc';
+                ctx.fillText(xLabel, chart.crosshair.x, bottom + 10);
+            }
+
+            // Y-axis labels (optional, can be noisy with priceTagPlugin)
+            
             ctx.restore();
         }
     }
@@ -91,6 +155,8 @@ interface DataPoint {
     time: string;
     vix: number | null;
     esf: number | null;
+    coneUp?: number | null;
+    coneDown?: number | null;
 }
 
 interface ReferenceLines {
@@ -139,31 +205,6 @@ function isTradingJustStarted() {
     return now.getHours() === 0 && now.getMinutes() === 5;
 }
 
-function calculateEMA(data: (number | null)[], period: number = 20) {
-    if (data.length === 0) return [];
-    const ema: (number | null)[] = [];
-    const k = 2 / (period + 1);
-    let prevEma: number | null = null;
-
-    for (let i = 0; i < data.length; i++) {
-        const value = data[i];
-        if (value === null) {
-            ema.push(null);
-            continue;
-        }
-
-        if (prevEma === null) {
-            // Find first non-null values to start SMA then EMA, or just start with first value
-            prevEma = value;
-            ema.push(prevEma);
-        } else {
-            prevEma = (value * k) + (prevEma * (1 - k));
-            ema.push(prevEma);
-        }
-    }
-    return ema;
-}
-
 export default function MarketPage() {
     const router = useRouter();
     const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
@@ -175,7 +216,7 @@ export default function MarketPage() {
     const [pluginsReady, setPluginsReady] = useState(false);
     const isZoomedRef = useRef(false);
     const [showDivergences, setShowDivergences] = useState(true);
-    const [showTrends, setShowTrends] = useState(false);
+    const [isLocked, setIsLocked] = useState(false);
 
     const [refLines, setRefLines] = useState<ReferenceLines>({
         r1Down: '',
@@ -222,9 +263,6 @@ export default function MarketPage() {
             // Load divergence preference
             const savedDiv = localStorage.getItem('marketShowDivergences');
             if (savedDiv !== null) setShowDivergences(savedDiv === 'true');
-            // Load trends preference
-            const savedTrends = localStorage.getItem('marketShowTrends');
-            if (savedTrends !== null) setShowTrends(savedTrends === 'true');
         }
     }, [router]);
 
@@ -233,10 +271,7 @@ export default function MarketPage() {
         localStorage.setItem('marketShowDivergences', String(showDivergences));
     }, [showDivergences]);
 
-    // Save trends preference
-    useEffect(() => {
-        localStorage.setItem('marketShowTrends', String(showTrends));
-    }, [showTrends]);
+
 
     // ---- Divergence Detection ----
     const detectDivergences = (points: DataPoint[]) => {
@@ -351,6 +386,7 @@ export default function MarketPage() {
                     yLeft: [yLeftMin, yLeftMax],
                     yRight: [yRightMin, yRightMax],
                 };
+                setIsLocked(true);
             }
         }
     }, []);
@@ -360,30 +396,26 @@ export default function MarketPage() {
         const chart = chartRef.current;
         if (!chart || dataPoints.length === 0) return;
 
-        chart.data.labels = dataPoints.map((d) => d.time);
         chart.data.datasets[0].data = dataPoints.map((d) => d.esf);
         chart.data.datasets[1].data = dataPoints.map((d) => d.vix);
-
-        if (showTrends) {
-            const esfTrend = calculateEMA(dataPoints.map(d => d.esf), 20);
-            const vixTrend = calculateEMA(dataPoints.map(d => d.vix), 20);
-            chart.data.datasets[2].data = esfTrend;
-            chart.data.datasets[3].data = vixTrend;
-        } else {
-            chart.data.datasets[2].data = [];
-            chart.data.datasets[3].data = [];
+        
+        // Ported from logica.zip: Add Cone datasets
+        if (chart.data.datasets.length > 3) {
+            chart.data.datasets[2].data = dataPoints.map((d) => d.coneUp ?? null);
+            chart.data.datasets[3].data = dataPoints.map((d) => d.coneDown ?? null);
         }
+
+
+
 
         const newAnnotations: any = {};
         const baseConfigs = [
             { key: 'r1Down', color: '#ef4444', dash: [] },
             { key: 'r2Down', color: '#f97316', dash: [] },
-            { key: 'r2Up', color: '#06b6d4', dash: [] },
+            { key: 'r3Down', color: '#facc15', dash: [] },
             { key: 'r1Up', color: '#3b82f6', dash: [] },
-            { key: 'r1DownOb', color: '#ef4444', dash: [5, 5] },
-            { key: 'r2DownOb', color: '#f97316', dash: [5, 5] },
-            { key: 'r2UpOb', color: '#06b6d4', dash: [5, 5] },
-            { key: 'r1UpOb', color: '#3b82f6', dash: [5, 5] },
+            { key: 'r2Up', color: '#06b6d4', dash: [] },
+            { key: 'r3Up', color: '#10b981', dash: [] },
         ];
 
         baseConfigs.forEach(({ key, color, dash }) => {
@@ -396,34 +428,7 @@ export default function MarketPage() {
             }
         });
 
-        // Dynamic Min/Max lines
-        const esfVals = dataPoints.map(d => d.esf).filter(v => v !== null) as number[];
-        if (esfVals.length > 1) {
-            const min = Math.min(...esfVals);
-            const max = Math.max(...esfVals);
-            newAnnotations['esf-min'] = {
-                type: 'line', yMin: min, yMax: min,
-                yScaleID: 'y-right', borderColor: '#22c55e', borderWidth: 1, borderDash: [2, 4],
-            };
-            newAnnotations['esf-max'] = {
-                type: 'line', yMin: max, yMax: max,
-                yScaleID: 'y-right', borderColor: '#22c55e', borderWidth: 1, borderDash: [2, 4],
-            };
-        }
 
-        const vixVals = dataPoints.map(d => d.vix).filter(v => v !== null) as number[];
-        if (vixVals.length > 1) {
-            const min = Math.min(...vixVals);
-            const max = Math.max(...vixVals);
-            newAnnotations['vix-min'] = {
-                type: 'line', yMin: min, yMax: min,
-                yScaleID: 'y-left', borderColor: '#3b82f6', borderWidth: 1, borderDash: [2, 4],
-            };
-            newAnnotations['vix-max'] = {
-                type: 'line', yMin: max, yMax: max,
-                yScaleID: 'y-left', borderColor: '#3b82f6', borderWidth: 1, borderDash: [2, 4],
-            };
-        }
 
         // Divergence boxes
         if (showDivergences) {
@@ -433,7 +438,22 @@ export default function MarketPage() {
 
         chart.options.plugins.annotation.annotations = newAnnotations;
 
-        // Determine independent locks
+        // Determine independent locks & handle Auto-Scroll
+        const prevMax = chart.scales.x.max;
+        const prevDataLen = chart.data.labels.length - 1; 
+        const isAtEnd = prevMax >= prevDataLen - 1; // Within 1 point of the end
+
+        chart.data.labels = dataPoints.map((d) => d.time);
+        const newDataLen = dataPoints.length;
+
+        // Auto-scroll logic: If we were at the end, shift the window forward
+        if (isAtEnd && (isZoomedRef.current || manualZoomRef.current) && manualLimitsRef.current?.x) {
+            const currentRange = manualLimitsRef.current.x[1] - manualLimitsRef.current.x[0];
+            const newMax = newDataLen - 1;
+            const newMin = Math.max(0, newMax - currentRange);
+            manualLimitsRef.current.x = [newMin, newMax];
+        }
+
         const xLocked = (isZoomedRef.current || manualZoomRef.current) && manualLimitsRef.current?.x;
         const yLeftLocked = manualYLeftZoomingRef.current && manualLimitsRef.current?.yLeft;
         const yRightLocked = manualYRightZoomingRef.current && manualLimitsRef.current?.yRight;
@@ -447,64 +467,64 @@ export default function MarketPage() {
             delete chart.options.scales.x.max;
         }
 
-        // Handle Y Scales (Auto-scaling vs Lock)
-        if (firstEsfValue !== null) {
-            const baseRange = 50;
-            let esfMinVal = firstEsfValue - baseRange;
-            let esfMaxVal = firstEsfValue + baseRange;
+        // Determine visible window indices for adaptive scaling
+        const xMinIdx = chart.scales.x.min !== undefined ? Math.max(0, Math.floor(chart.scales.x.min)) : 0;
+        const xMaxIdx = chart.scales.x.max !== undefined ? Math.min(dataPoints.length - 1, Math.ceil(chart.scales.x.max)) : dataPoints.length - 1;
+        const visiblePoints = dataPoints.slice(xMinIdx, xMaxIdx + 1);
 
+        // Handle Y Scales (Auto-scaling vs Lock)
+        if (visiblePoints.length > 0) {
             // 1. Calculate ES=F (y-right) range if NOT locked
             if (!yRightLocked) {
-                const visibleRefValues: number[] = [];
-                Object.keys(refLines).forEach(k => {
-                    const key = k as keyof ReferenceLines;
-                    if (refLines[key] && !isNaN(parseFloat(refLines[key])) && refLineVisibility[key as keyof RefLineVisibility]) {
-                        visibleRefValues.push(parseFloat(refLines[key]));
-                    }
-                });
-
-                const esfValues = dataPoints.map(d => d.esf).filter(v => v !== null) as number[];
+                const esfValues = visiblePoints.map(d => d.esf).filter(v => v !== null) as number[];
                 if (esfValues.length > 0) {
                     const dataMin = Math.min(...esfValues);
                     const dataMax = Math.max(...esfValues);
-                    esfMinVal = Math.min(esfMinVal, dataMin - 10);
-                    esfMaxVal = Math.max(esfMaxVal, dataMax + 10);
-                }
+                    
+                    // Factor in reference lines ONLY if they are globally relevant or visible
+                    const visibleRefValues: number[] = [];
+                    Object.keys(refLines).forEach(k => {
+                        const key = k as keyof ReferenceLines;
+                        const val = parseFloat(refLines[key]);
+                        if (!isNaN(val) && refLineVisibility[key as keyof RefLineVisibility]) {
+                            // Only include ref lines in auto-scale if they are somewhat near the current data
+                            // to avoid compressing the chart too much.
+                            if (val >= dataMin - 100 && val <= dataMax + 100) {
+                                visibleRefValues.push(val);
+                            }
+                        }
+                    });
 
-                if (visibleRefValues.length > 0) {
-                    const minRef = Math.min(...visibleRefValues);
-                    const maxRef = Math.max(...visibleRefValues);
-                    esfMinVal = Math.min(esfMinVal, minRef - 5);
-                    esfMaxVal = Math.max(esfMaxVal, maxRef + 5);
+                    let finalMin = dataMin;
+                    let finalMax = dataMax;
+
+                    if (visibleRefValues.length > 0) {
+                        finalMin = Math.min(finalMin, Math.min(...visibleRefValues));
+                        finalMax = Math.max(finalMax, Math.max(...visibleRefValues));
+                    }
+
+                    const padding = (finalMax - finalMin) * 0.1 || 10;
+                    chart.options.scales['y-right'].min = finalMin - padding;
+                    chart.options.scales['y-right'].max = finalMax + padding;
                 }
-                chart.options.scales['y-right'].min = esfMinVal;
-                chart.options.scales['y-right'].max = esfMaxVal;
             } else if (manualLimitsRef.current?.yRight) {
                 chart.options.scales['y-right'].min = manualLimitsRef.current.yRight[0];
                 chart.options.scales['y-right'].max = manualLimitsRef.current.yRight[1];
             }
 
-            // 2. Calculate VIX (y-left) range if NOT locked
-            if (!yLeftLocked) {
-                const vixValues = dataPoints.map(d => d.vix).filter(v => v !== null) as number[];
+            // 2. Calculate VIX (y-left) range
+            // We ALWAYS auto-scale VIX based on visible points UNLESS the user 
+            // explicitly grabbed the left axis (manualYLeftZoomingRef). 
+            // This ensures ES manual changes don't "lose" the VIX line.
+            if (!yLeftLocked || !manualYLeftZoomingRef.current) {
+                const vixValues = visiblePoints.map(d => d.vix).filter(v => v !== null) as number[];
                 if (vixValues.length > 0) {
                     const vixMin = Math.min(...vixValues);
                     const vixMax = Math.max(...vixValues);
-                    const vixCenter = (vixMin + vixMax) / 2;
-                    const vixDataRange = vixMax - vixMin;
+                    const padding = (vixMax - vixMin) * 0.1 || 0.5;
                     
-                    // Use price range for dynamic VIX scaling if price is also auto-scaling
-                    const currentEsfMin = chart.options.scales['y-right'].min;
-                    const currentEsfMax = chart.options.scales['y-right'].max;
-                    const actualEsfRange = currentEsfMax - currentEsfMin;
-                    const baseEsfRange = baseRange * 2;
-                    
-                    const expansionFactor = actualEsfRange / baseEsfRange;
-                    const baseVixRange = Math.max(vixDataRange * 1.2, 2);
-                    const expandedVixRange = baseVixRange * expansionFactor;
-                    
-                    chart.options.scales['y-left'].min = vixCenter - (expandedVixRange / 2);
-                    chart.options.scales['y-left'].max = vixCenter + (expandedVixRange / 2);
+                    chart.options.scales['y-left'].min = vixMin - padding;
+                    chart.options.scales['y-left'].max = vixMax + padding;
                 }
             } else if (manualLimitsRef.current?.yLeft) {
                 chart.options.scales['y-left'].min = manualLimitsRef.current.yLeft[0];
@@ -513,7 +533,7 @@ export default function MarketPage() {
         }
 
         chart.update('none');
-    }, [dataPoints, firstEsfValue, refLines, refLineVisibility, showTrends]);
+    }, [dataPoints, firstEsfValue, refLines, refLineVisibility]);
 
     // ---- Plugins (zoom) ----
     useEffect(() => {
@@ -590,6 +610,8 @@ export default function MarketPage() {
                     time: timeStr,
                     vix: data.vix,
                     esf: data.esf,
+                    coneUp: data.coneUp,
+                    coneDown: data.coneDown,
                 };
                 if (prev.length === 0 && data.esf !== null) {
                     setFirstEsfValue(data.esf);
@@ -943,6 +965,7 @@ export default function MarketPage() {
             delete chart.options.scales['y-right'].min;
             delete chart.options.scales['y-right'].max;
 
+            setIsLocked(false);
             chart.update();
         }
     };
@@ -954,12 +977,12 @@ export default function MarketPage() {
             {
                 label: 'ES=F (S&P 500 Futures)',
                 data: [] as (number | null)[],
-                borderColor: '#22c55e',
-                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                borderColor: '#facc15',
+                backgroundColor: 'rgba(250, 204, 21, 0.1)',
                 borderWidth: 2,
                 pointRadius: 0,
                 pointHoverRadius: 4,
-                tension: 0.3,
+                tension: 0.1,
                 yAxisID: 'y-right',
                 fill: false,
             },
@@ -971,30 +994,30 @@ export default function MarketPage() {
                 borderWidth: 2,
                 pointRadius: 0,
                 pointHoverRadius: 4,
-                tension: 0.3,
+                tension: 0.1,
                 yAxisID: 'y-left',
                 fill: false,
             },
             {
-                label: 'ES Trend',
+                label: 'Straddle Up',
                 data: [] as (number | null)[],
-                borderColor: '#22c55e',
-                borderWidth: 1.5,
-                borderDash: [5, 5],
+                borderColor: '#f97316',
+                borderWidth: 1,
+                borderDash: [2, 4],
                 pointRadius: 0,
-                tension: 0.4,
+                tension: 0.1,
                 yAxisID: 'y-right',
                 fill: false,
             },
             {
-                label: 'VIX Trend',
+                label: 'Straddle Down',
                 data: [] as (number | null)[],
-                borderColor: '#3b82f6',
-                borderWidth: 1.5,
-                borderDash: [5, 5],
+                borderColor: '#f97316',
+                borderWidth: 1,
+                borderDash: [2, 4],
                 pointRadius: 0,
-                tension: 0.4,
-                yAxisID: 'y-left',
+                tension: 0.1,
+                yAxisID: 'y-right',
                 fill: false,
             },
         ],
@@ -1013,7 +1036,12 @@ export default function MarketPage() {
                     drag: { enabled: false }, // Disable native drag zoom to ensure custom panning works
                     pinch: { enabled: true },
                     mode: 'x' as const,
-                    onZoomComplete: updateZoomState,
+                    onZoomComplete: () => {
+                        isZoomedRef.current = true;
+                        manualZoomRef.current = true;
+                        setIsLocked(true);
+                        updateZoomState();
+                    },
                 },
                 pan: {
                     enabled: true, // Enable native pan plugin for smooth left-drag panning
@@ -1022,24 +1050,23 @@ export default function MarketPage() {
                     onPanComplete: () => {
                         isZoomedRef.current = true;
                         manualZoomRef.current = true;
-                        manualYLeftZoomingRef.current = true;
-                        manualYRightZoomingRef.current = true;
+                        // We set manual locking specifically when the user interacts 
+                        // but we will keep the "other" axis adapting if not touched.
+                        // For global pans, we usually lock what was moved.
+                        setIsLocked(true);
                         updateZoomState();
                     },
                 },
                 // Removed limits to allow free panning in any direction
             },
             title: {
-                display: true,
-                text: 'VIX & ES=F — Daily Monitor',
-                color: '#e2e8f0',
-                font: { size: 18, weight: 'bold' as const },
-                padding: { bottom: 20 },
+                display: false, // Cleaner TV look
             },
             legend: {
                 display: true,
                 position: 'top' as const,
-                labels: { color: '#94a3b8', usePointStyle: true, pointStyle: 'line', font: { size: 13 } },
+                align: 'start' as const,
+                labels: { color: '#94a3b8', boxWidth: 12, font: { size: 12 } },
             },
             tooltip: { enabled: false },
         },
@@ -1047,32 +1074,31 @@ export default function MarketPage() {
             x: {
                 display: true,
                 offset: true,
-                title: { display: true, text: 'Time', color: '#94a3b8', font: { size: 12 } },
-                ticks: { color: '#94a3b8', maxRotation: 45, autoSkip: true, maxTicksLimit: 30, font: { size: 10 } },
-                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                ticks: { color: '#94a3b8', maxRotation: 0, autoSkip: true, maxTicksLimit: 12, font: { size: 11 } },
+                grid: { color: 'rgba(51, 65, 85, 0.1)', drawTicks: true },
             },
             'y-left': {
                 type: 'linear' as const,
                 position: 'left' as const,
                 display: true,
-                title: { display: true, text: 'VIX', color: '#3b82f6', font: { size: 13, weight: 'bold' as const } },
-                ticks: { color: '#e2e8f0', font: { size: 12 }, padding: 8 },
-                grid: { color: 'rgba(59, 130, 246, 0.08)' },
+                ticks: { color: '#94a3b8', font: { size: 11 }, padding: 8 },
+                grid: { color: 'rgba(51, 65, 85, 0.1)' },
+            },
+            'y-voltide': {
+                type: 'linear' as const,
+                position: 'left' as const,
+                display: false, // Hidden by default for cleaner look
             },
             'y-right': {
                 type: 'linear' as const,
                 position: 'right' as const,
                 display: true,
-                title: { display: true, text: 'ES=F ($)', color: '#22c55e', font: { size: 13, weight: 'bold' as const } },
                 ticks: {
-                    color: '#e2e8f0',
-                    font: { size: 12 },
+                    color: '#94a3b8',
+                    font: { size: 11 },
                     padding: 8,
-                    callback: function (value: string | number) {
-                        return `$${Number(value).toLocaleString()}`;
-                    },
                 },
-                grid: { drawOnChartArea: false },
+                grid: { display: false },
             },
         },
     }), [updateZoomState]);
@@ -1097,14 +1123,14 @@ export default function MarketPage() {
     const sc = statusConfig[status];
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white p-4 md:p-8">
+        <div className="min-h-screen bg-[#0c0d10] text-slate-300 p-4 md:p-8 font-sans">
             <div className="w-full max-w-[1920px] mx-auto">
                 {/* Header */}
                 <div className="flex flex-col md:flex-row items-start md:items-center justify-between mb-6">
                     <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-4">
-                            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-green-400 bg-clip-text text-transparent">
-                                Market Monitor
+                            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-orange-400 bg-clip-text text-transparent">
+                                Market Monitor <span className="text-sm font-light text-slate-500 italic ml-2">ODD LOGIC</span>
                             </h1>
                             <div className="flex items-center gap-2 ml-2">
                                 <div className="flex items-center gap-2 px-2 py-1 bg-blue-500/10 border border-blue-500/20 rounded-md">
@@ -1219,8 +1245,8 @@ export default function MarketPage() {
                 )}
 
 
-                {/* Chart */}
-                <div className="bg-slate-800/60 backdrop-blur-sm border border-slate-700/50 rounded-xl p-4 md:p-6">
+                {/* Chart Area */}
+                <div className="bg-[#0c0d10] border border-slate-800/50 rounded-lg p-2 md:p-4 shadow-2xl">
                     {/* Zoom Controls */}
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
@@ -1244,23 +1270,21 @@ export default function MarketPage() {
                             {showDivergences ? '🔔 Div ON' : '🔕 Div OFF'}
                         </button>
 
-                        <button
-                            onClick={() => setShowTrends(!showTrends)}
-                            className={`px-3 py-1.5 border rounded-lg text-xs font-medium transition-colors ml-2 ${showTrends
-                                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30'
-                                : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700'
-                                }`}
-                            title={showTrends ? 'Hide Trends' : 'Show Trends'}
-                        >
-                            {showTrends ? '📈 Trend ON' : '📉 Trend OFF'}
-                        </button>
+
 
                         <button
                             onClick={handleResetZoom}
-                            className="px-3 py-1.5 bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded-lg text-xs font-medium text-slate-300 hover:text-white transition-colors"
-                            title="Reset Zoom"
+                            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 flex items-center gap-2 ${isLocked
+                                ? 'bg-blue-600 text-white shadow-[0_0_15px_rgba(59,130,246,0.5)] border-blue-400'
+                                : 'bg-slate-800/80 text-slate-400 border border-slate-700 hover:bg-slate-700 cursor-default'
+                                }`}
+                            title={isLocked ? 'Restore Live View' : 'Live Tracking Active'}
                         >
-                            🔄 Reset
+                            {isLocked ? (
+                                <><span className="w-2 h-2 bg-white rounded-full animate-pulse"></span> RESTORE LIVE VIEW</>
+                            ) : (
+                                <><span className="w-2 h-2 bg-green-500 rounded-full"></span> LIVE TRACKING</>
+                            )}
                         </button>
                     </div>
 
@@ -1277,7 +1301,7 @@ export default function MarketPage() {
                                 ref={chartRef}
                                 data={chartData}
                                 options={chartOptions}
-                                plugins={[scaleBackgroundPlugin, crosshairPlugin]}
+                                plugins={[scaleBackgroundPlugin, crosshairPlugin, priceTagPlugin]}
                             />
                         ) : (
                             <div className="flex items-center justify-center h-full">
