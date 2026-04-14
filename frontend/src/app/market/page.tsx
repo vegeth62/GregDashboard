@@ -1170,6 +1170,14 @@ export default function MarketPage() {
                             ⚙️ Ref Lines
                         </button>
 
+                        <button
+                            onClick={() => router.push('/spx-volumes')}
+                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 border border-blue-400 rounded-lg text-xs font-bold text-white transition-colors"
+                        >
+                            📊 VOLUMI SPX
+                        </button>
+
+
 
                         {/* Status badge */}
                         <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border ${sc.color}`}>
