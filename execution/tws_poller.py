@@ -54,6 +54,11 @@ def append_to_session_file(date_key, point):
     ensure_data_dir()
     existing = read_session_file(date_key)
     existing.append(point)
+    
+    # Keep only the last 100 snapshots to ensure performance
+    if len(existing) > 100:
+        existing = existing[-100:]
+        
     file_path = get_file_path(date_key)
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
@@ -89,15 +94,18 @@ def main():
     connected = False
     
     import random
-    client_id = random.randint(1, 9999)
     
-    try:
-        print(f"Attempting to connect to IBKR TWS on 127.0.0.1:7496 as clientId {client_id}...")
-        ib.connect('127.0.0.1', 7496, clientId=client_id)
-        print("Connected to IBKR on port 7496.")
-        connected = True
-    except Exception as e:
-        pass
+    for attempt in range(5):
+        client_id = random.randint(1000, 9999)
+        try:
+            print(f"Attempting to connect to IBKR TWS on 127.0.0.1:7496 as clientId {client_id} (attempt {attempt+1})...")
+            ib.connect('127.0.0.1', 7496, clientId=client_id, timeout=10)
+            print("Connected to IBKR on port 7496.")
+            connected = True
+            break
+        except Exception as e:
+            print(f"Connection attempt {attempt+1} failed: {e}")
+            ib.sleep(2)
             
     if not connected:
         print("\nERROR: Failed to connect to IBKR on port 7496.")

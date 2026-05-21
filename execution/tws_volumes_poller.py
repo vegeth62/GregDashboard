@@ -47,6 +47,11 @@ def append_to_session_file(date_key, snapshot):
     ensure_data_dir()
     existing = read_session_file(date_key)
     existing.append(snapshot)
+    
+    # Keep only the last 100 snapshots to ensure performance
+    if len(existing) > 100:
+        existing = existing[-100:]
+        
     file_path = get_file_path(date_key)
     try:
         # Write to temporary file, then rename for atomicity
@@ -149,16 +154,16 @@ def main():
 
     # 3. Determine Strikes (3 Sigma)
     # Using roughly 3% or we can just fetch a fixed +/- 100 points
-    # 3 sigma intraday is roughly ~1.5 - 2%. Let's use +/- 120 points around ATM
-    range_points = 150
+    # 3 sigma intraday is roughly ~1.5 - 2%. Let's use +/- 135 points around ATM
+    range_points = 135
     strikes = [s for s in chain.strikes if spx - range_points <= s <= spx + range_points]
     
     print(f"Selected {len(strikes)} strikes around {spx} (Range: {spx-range_points} to {spx+range_points})")
 
-    # Limit to 45 strikes max to avoid 100 tick limit (45 calls + 45 puts = 90)
-    if len(strikes) > 45:
-        # Keep the 45 closest to ATM
-        strikes = sorted(strikes, key=lambda s: abs(s - spx))[:45]
+    # Limit to 40 strikes max to avoid 100 tick limit (40 calls + 40 puts = 80)
+    if len(strikes) > 40:
+        # Keep the 40 closest to ATM
+        strikes = sorted(strikes, key=lambda s: abs(s - spx))[:40]
         strikes = sorted(strikes)
         
     # 4. Subscribe to Option Tickers

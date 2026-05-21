@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import ReactECharts from 'echarts-for-react';
-import 'echarts-gl';
+import dynamic from 'next/dynamic';
+
+const ReactECharts = dynamic(() => import('echarts-for-react'), { ssr: false });
 
 interface VolumePoint {
     strike: number;
@@ -15,6 +16,8 @@ interface VolumePoint {
 interface VolumeSnapshot {
     time: string;
     volumes: VolumePoint[];
+    spxPrice?: number | null;
+    isOpening?: boolean;
 }
 
 function build3DOption(
@@ -25,7 +28,7 @@ function build3DOption(
     colorRange: string[],
     maxVol: number,
     savedViewControl: any,
-    openingStrikeIndex: number | null
+    spxPathIndices: number[] | null
 ) {
     const series: any[] = [{
         type: 'bar3D',
@@ -33,28 +36,30 @@ function build3DOption(
         shading: 'lambert',
         barSize: Math.max(2, Math.min(15, 200 / strikes.length)),
         emphasis: {
-            itemStyle: { color: '#facc15' }
+            itemStyle: { color: '#ffff00' }
         }
     }];
 
-    // Add a vertical reference line at the opening strike price
-    if (openingStrikeIndex !== null && openingStrikeIndex >= 0) {
+    // Add a dynamic line tracing the SPX price over time
+    if (spxPathIndices && spxPathIndices.length > 0) {
         const linePoints: any[] = [];
-        // Create a line that spans across all time indices at the opening strike
         for (let i = 0; i < times.length; i++) {
-            // Point: [strikeIndex, timeIndex, height] 
-            // We use a height slightly above maxVol to make it visible
-            linePoints.push([openingStrikeIndex, i, maxVol * 1.05]);
+            const strikeIdx = spxPathIndices[i] ?? -1;
+            if (strikeIdx >= 0) {
+                linePoints.push([strikeIdx, i, maxVol * 1.05]);
+            }
         }
 
-        series.push({
-            type: 'line3D',
-            data: linePoints,
-            lineStyle: {
-                width: 4,
-                color: '#facc15' // Bright yellow for the open
-            }
-        });
+        if (linePoints.length > 0) {
+            series.push({
+                type: 'line3D',
+                data: linePoints,
+                lineStyle: {
+                    width: 4,
+                    color: '#ffff00' // Bright yellow for the SPX price path
+                }
+            });
+        }
     }
 
     const grid3D: any = {
@@ -77,7 +82,11 @@ function build3DOption(
     return {
         tooltip: {
             formatter: (params: any) => {
-                if (params.seriesType === 'line3D') return `<b>SPX OPEN PRICE</b><br/>Strike: ${strikes[openingStrikeIndex!]}`;
+                if (params.seriesType === 'line3D') {
+                    const timeIdx = params.value[1];
+                    const strike = strikes[params.value[0]];
+                    return `<b>SPX TRACE</b><br/>Time: ${times[timeIdx]}<br/>Strike: ${strike}`;
+                }
                 const strike = strikes[params.value[0]];
                 const time = times[params.value[1]];
                 const vol = params.value[2];
@@ -137,11 +146,12 @@ function build3DOption(
 export default function SpxVolumesPage() {
     const router = useRouter();
     const [history, setHistory] = useState<VolumeSnapshot[]>([]);
+    const [chartsReady, setChartsReady] = useState(false);
     
     // Core references
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
-    const callChartRef = useRef<ReactECharts | null>(null);
-    const putChartRef = useRef<ReactECharts | null>(null);
+    const callChartRef = useRef<any>(null);
+    const putChartRef = useRef<any>(null);
     const savedCallView = useRef<any>(null);
     const savedPutView = useRef<any>(null);
 
@@ -181,14 +191,25 @@ export default function SpxVolumesPage() {
     };
 
     useEffect(() => {
+        let active = true;
+
+        const loadCharts = async () => {
+            await import('echarts-gl');
+            if (active) {
+                setChartsReady(true);
+            }
+        };
+
+        loadCharts();
         fetchData();
         intervalRef.current = setInterval(fetchData, 10000);
         return () => {
+            active = false;
             if (intervalRef.current) clearInterval(intervalRef.current);
         };
     }, []);
 
-    const { strikes, times, callsData, putsData, maxCallVol, maxPutVol, openingStrikeIndex } = useMemo(() => {
+    const { strikes, times, callsData, putsData, maxCallVol, maxPutVol, spxPathIndices } = useMemo(() => {
         const timesArr: string[] = [];
         const strikesSet = new Set<number>();
         let openSPX: number | null = null;
@@ -203,18 +224,20 @@ export default function SpxVolumesPage() {
 
         const strikesArr = Array.from(strikesSet).sort((a, b) => a - b);
         
-        // Find the index of the strike closest to the opening SPX price
-        let openIdx: number | null = null;
-        if (openSPX !== null) {
+        // Find the index of the strike closest to the SPX price at EACH time step
+        const spxPathIndices: number[] = history.map(snapshot => {
+            if (!snapshot.spxPrice) return -1;
             let minDiff = Infinity;
+            let closestIdx = -1;
             strikesArr.forEach((s, idx) => {
-                const diff = Math.abs(s - openSPX!);
+                const diff = Math.abs(s - snapshot.spxPrice!);
                 if (diff < minDiff) {
                     minDiff = diff;
-                    openIdx = idx;
+                    closestIdx = idx;
                 }
             });
-        }
+            return closestIdx;
+        });
 
         const callsData3D: number[][] = [];
         const putsData3D: number[][] = [];
@@ -256,7 +279,7 @@ export default function SpxVolumesPage() {
             putsData: putsData3D,
             maxCallVol: maxC,
             maxPutVol: maxP,
-            openingStrikeIndex: openIdx
+            spxPathIndices
         };
     }, [history]);
 
@@ -265,8 +288,8 @@ export default function SpxVolumesPage() {
     const putColors = ['#ffffff', '#fcd6e0', '#f472b6', '#ec4899', '#be185d', '#9d174d', '#500724'];
 
     // Notice we inject the explicitly saved camera view instances!
-    const callOption = build3DOption(strikes, times, callsData, 'CALLS', callColors, maxCallVol, savedCallView.current, openingStrikeIndex);
-    const putOption = build3DOption(strikes, times, putsData, 'PUTS', putColors, maxPutVol, savedPutView.current, openingStrikeIndex);
+    const callOption = build3DOption(strikes, times, callsData, 'CALLS', callColors, maxCallVol, savedCallView.current, spxPathIndices);
+    const putOption = build3DOption(strikes, times, putsData, 'PUTS', putColors, maxPutVol, savedPutView.current, spxPathIndices);
 
     const lastTime = times.length > 1 ? times[times.length - 1] : null;
     const snapshotCount = history.length;
@@ -295,7 +318,7 @@ export default function SpxVolumesPage() {
                     </button>
                 </div>
 
-                {history.length > 0 ? (
+                {chartsReady && history.length > 0 ? (
                     <div className="flex flex-col md:flex-row gap-3">
                         {/* PUTS */}
                         <div className="flex-1 bg-[#0c0d10] border border-pink-900/40 rounded-xl p-2 shadow-2xl w-full">
@@ -334,7 +357,7 @@ export default function SpxVolumesPage() {
                         <div className="text-center">
                             <div className="w-12 h-12 border-4 border-purple-500/30 border-t-purple-500 rounded-full animate-spin mx-auto mb-4" />
                             <p className="text-slate-400 text-sm">
-                                Waiting for option volume data...<br />
+                                {chartsReady ? 'Waiting for option volume data...' : 'Loading 3D chart engine...'}<br />
                             </p>
                         </div>
                     </div>
