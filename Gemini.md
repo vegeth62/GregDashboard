@@ -135,6 +135,11 @@ Prova Greg/
 - **Chart.js**: Doppio asse Y, zoom/pan su asse X, crosshair con labels.
 - **Removed Indicators**: VolTide and Trends (EMA) have been removed for a cleaner look.
 
+### 5.6 SPX Volumes (Grafico 3D)
+- **Route**: `/spx-volumes` (collegato da Market Monitor).
+- **Engine**: `echarts` + `echarts-gl` per visualizzare i volumi di Call e Put in 3D.
+- **Traccia Prezzo (SPX Price Line)**: Disegnata come una linea 3D giallo acceso (`#ffff00`) che segue lo strike più vicino al prezzo di SPX nel tempo. L'altezza (asse Z) è impostata al picco massimo del volume a quel passo temporale (`localMaxVol * 1.02`) per rimanere appena sopra le barre ed essere sempre visibile.
+
 ---
 
 ## 6. Finance Input
@@ -219,4 +224,4 @@ git add -A && git commit -m "..." && git push origin main
 
 ---
 
-*Ultima modifica: 2026-02-20 — Antigravity AI*
+*Ultima modifica: 2026-06-10 — Antigravity AI*

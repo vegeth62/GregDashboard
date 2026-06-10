@@ -46,7 +46,16 @@ function build3DOption(
         for (let i = 0; i < times.length; i++) {
             const strikeIdx = spxPathIndices[i] ?? -1;
             if (strikeIdx >= 0) {
-                linePoints.push([strikeIdx, i, maxVol * 1.05]);
+                // Find all volume data points at this specific time step i
+                const pointsAtTime = data3D.filter(item => item[1] === i);
+                let height = 0;
+                if (pointsAtTime.length > 0) {
+                    // Height is set to the volume of the closest strike that has the largest volume at this time step
+                    const vols = pointsAtTime.map(item => item[2]);
+                    height = Math.max(...vols);
+                }
+                // We add a tiny multiplier (1.02) so the line floats just above the highest bar at this time step
+                linePoints.push([strikeIdx, i, height > 0 ? height * 1.02 : 10]);
             }
         }
 
@@ -96,6 +105,7 @@ function build3DOption(
         visualMap: {
             show: false,
             dimension: 1, // color by time index
+            seriesIndex: 0, // Only color the bar3D series, leaving line3D white
             min: 0,
             max: Math.max(1, times.length - 1),
             inRange: {

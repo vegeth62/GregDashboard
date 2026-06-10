@@ -152,19 +152,23 @@ def main():
         
     chain = valid_chain
 
-    # 3. Determine Strikes (3 Sigma)
-    # Using roughly 3% or we can just fetch a fixed +/- 100 points
-    # 3 sigma intraday is roughly ~1.5 - 2%. Let's use +/- 135 points around ATM
-    range_points = 135
-    strikes = [s for s in chain.strikes if spx - range_points <= s <= spx + range_points]
+    # 3. Determine Strikes (18 above, 18 below ATM per ridurre del 10%)
+    sorted_strikes = sorted(chain.strikes)
     
-    print(f"Selected {len(strikes)} strikes around {spx} (Range: {spx-range_points} to {spx+range_points})")
-
-    # Limit to 40 strikes max to avoid 100 tick limit (40 calls + 40 puts = 80)
-    if len(strikes) > 40:
-        # Keep the 40 closest to ATM
-        strikes = sorted(strikes, key=lambda s: abs(s - spx))[:40]
-        strikes = sorted(strikes)
+    # Find the index of the ATM strike (closest to spx)
+    if not sorted_strikes:
+        print("CRITICAL: No strikes found in the option chain.")
+        return
+        
+    atm_strike_idx = min(range(len(sorted_strikes)), key=lambda i: abs(sorted_strikes[i] - spx))
+    
+    # Select 18 strikes below and 18 strikes above (37 strikes total -> 74 tickers)
+    start_idx = max(0, atm_strike_idx - 18)
+    end_idx = min(len(sorted_strikes), atm_strike_idx + 19)
+    
+    strikes = sorted_strikes[start_idx:end_idx]
+    
+    print(f"Selected {len(strikes)} strikes around {spx} (18 above, 18 below ATM)")
         
     # 4. Subscribe to Option Tickers
     option_tickers = []
