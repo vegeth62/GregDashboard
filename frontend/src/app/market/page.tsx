@@ -14,6 +14,7 @@ import {
     TimeScale,
     Filler,
 } from 'chart.js';
+import GexPage from '../gex/page';
 import annotationPlugin from 'chartjs-plugin-annotation';
 import 'chartjs-adapter-date-fns';
 import { Line } from 'react-chartjs-2';
@@ -213,6 +214,8 @@ export default function MarketPage() {
     const [lastUpdate, setLastUpdate] = useState<string>('');
     const [firstEsfValue, setFirstEsfValue] = useState<number | null>(null);
     const [showSettings, setShowSettings] = useState(false);
+  const [activeTab, setActiveTab] = useState<'market'|'gex'>('market');
+
     const [pluginsReady, setPluginsReady] = useState(false);
     const isZoomedRef = useRef(false);
     const [showDivergences, setShowDivergences] = useState(true);
@@ -1162,6 +1165,12 @@ export default function MarketPage() {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 mt-3 md:mt-0">
+                        {/* Tab Switcher */}
+                        <div className="flex bg-slate-900 border border-slate-700 rounded-lg p-1 mr-4">
+                            <button onClick={() => setActiveTab('market')} className={`px-3 py-1 text-xs font-bold rounded ${activeTab === 'market' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>MARKET</button>
+                            <button onClick={() => setActiveTab('gex')} className={`px-3 py-1 text-xs font-bold rounded ${activeTab === 'gex' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>GEX</button>
+                        </div>
+                        
                         {/* Settings button */}
                         <button
                             onClick={() => setShowSettings(!showSettings)}
@@ -1254,7 +1263,8 @@ export default function MarketPage() {
 
 
                 {/* Chart Area */}
-                <div className="bg-[#0c0d10] border border-slate-800/50 rounded-lg p-2 md:p-4 shadow-2xl">
+                {activeTab === 'market' ? (
+                  <div className="bg-[#0c0d10] border border-slate-800/50 rounded-lg p-2 md:p-4 shadow-2xl">
                     {/* Zoom Controls */}
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
@@ -1323,9 +1333,13 @@ export default function MarketPage() {
                                 </div>
                             </div>
                         )}
-                    </div>
-                </div>
-
+                          </div>
+                      </div>
+                    ) : (
+                      <div className="w-full h-[calc(100vh-240px)] min-h-[400px] bg-[#0c0d10] border border-slate-800/50 rounded-lg p-4 shadow-2xl">
+                        <GexPage dataPoints={dataPoints} />
+                      </div>
+                    )}
                 {/* Footer */}
                 <div className="mt-4 text-center text-slate-600 text-xs">
                     Data refreshed every 5 seconds • Active window: 00:00–23:00 CET • Source: IBKR TWS
