@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
 import path from 'path';
+import { Client } from 'pg';
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
@@ -9,6 +10,30 @@ const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export const dynamic = 'force-dynamic';
+
+let isMigrated = false;
+async function runMigration() {
+    if (isMigrated) return;
+    try {
+        const client = new Client({
+            host: process.env.POSTGRES_HOST || 'db.fssneiurouyvtbqifhso.supabase.co',
+            user: process.env.POSTGRES_USER || 'postgres',
+            password: process.env.POSTGRES_PASSWORD || '17HyIdcGzviuvH9l',
+            database: process.env.POSTGRES_DATABASE || 'postgres',
+            port: 5432,
+            ssl: {
+                rejectUnauthorized: false
+            }
+        });
+        await client.connect();
+        await client.query('ALTER TABLE market_data ADD COLUMN IF NOT EXISTS spx FLOAT8;');
+        await client.end();
+        isMigrated = true;
+        console.log('Supabase migration succeeded: spx column is ready.');
+    } catch (e) {
+        console.error('Supabase migration error:', e);
+    }
+}
 
 function getTodayKey() {
     const now = new Date();
@@ -20,6 +45,7 @@ function getTodayKey() {
 
 export async function GET(request: Request) {
     try {
+        await runMigration();
         const { searchParams } = new URL(request.url);
         const historyMode = searchParams.get('history') === 'true';
         const dateParam = searchParams.get('date'); // e.g. ?date=2026-02-19
@@ -59,7 +85,7 @@ export async function GET(request: Request) {
                 try {
                     const res = await supabase
                         .from('market_data')
-                        .select('time, vix, esf, created_at')
+                        .select('time, vix, esf, spx, created_at')
                         .eq('date', dateParam)
                         .order('created_at', { ascending: true });
                     data = res.data;
@@ -79,7 +105,7 @@ export async function GET(request: Request) {
                 try {
                     const res = await supabase
                         .from('market_data')
-                        .select('time, vix, esf, created_at')
+                        .select('time, vix, esf, spx, created_at')
                         .eq('date', today)
                         .order('created_at', { ascending: true });
                     data = res.data;
@@ -99,12 +125,13 @@ export async function GET(request: Request) {
             const today = getTodayKey();
             let vixPrice = null;
             let esfPrice = null;
+            let spxPrice = null;
 
             if (isSupabaseConfigured) {
                 try {
                     const { data, error } = await supabase
                         .from('market_data')
-                        .select('vix, esf, created_at')
+                        .select('vix, esf, spx, created_at')
                         .eq('date', today)
                         .order('created_at', { ascending: false })
                         .limit(1);
@@ -112,6 +139,7 @@ export async function GET(request: Request) {
                     if (!error && data && data.length > 0) {
                         vixPrice = data[0].vix;
                         esfPrice = data[0].esf;
+                        spxPrice = data[0].spx ?? null;
                     }
                 } catch (e) { console.error('Supabase fetch failed:', e); }
             }
@@ -122,6 +150,7 @@ export async function GET(request: Request) {
                     const lastPoint = localData[localData.length - 1];
                     vixPrice = lastPoint.vix;
                     esfPrice = lastPoint.esf;
+                    if (lastPoint.spx !== undefined) spxPrice = lastPoint.spx;
                 }
             }
 
@@ -134,6 +163,7 @@ export async function GET(request: Request) {
                 timestamp: now.toISOString(),
                 vix: vixPrice,
                 esf: esfPrice,
+                spx: spxPrice,
             }, { status: 200 });
         }
     } catch (error: any) {

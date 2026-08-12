@@ -1,24 +1,10 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 
 const ReactECharts = dynamic(() => import('echarts-for-react'), { ssr: false });
-
-// --- Mock Data Generators ---
-const generateSpotPath = () => {
-    const data = [];
-    let time = new Date('2026-05-21T10:00:00');
-    let price = 7390;
-    
-    for (let i = 0; i < 200; i++) {
-        data.push([time.getTime(), price]);
-        time = new Date(time.getTime() + 60000); // +1 min
-        price += (Math.random() - 0.45) * 5; // slight upward drift
-    }
-    return data;
-};
 
 const strikes = [7325, 7350, 7375, 7400, 7425, 7450, 7475, 7500];
 
@@ -52,14 +38,71 @@ const historicalDots = [
     [30.0, 7426], [20.0, 7399]
 ];
 
+// Converts "HH:mm:ss" time string to a Date timestamp for today
+function timeStringToDate(timeStr: string): number {
+    const [h, m, s] = timeStr.split(':').map(Number);
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, s ?? 0).getTime();
+}
+
+// Returns true if time string (HH:mm:ss) is >= 15:30 CET
+function isFrom1530(timeStr: string): boolean {
+    const [h, m] = timeStr.split(':').map(Number);
+    return h > 15 || (h === 15 && m >= 30);
+}
+
 export default function SpxGammaPage() {
     const router = useRouter();
     const [chartsReady, setChartsReady] = useState(false);
     const [spotData, setSpotData] = useState<number[][]>([]);
+    const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
     useEffect(() => {
-        setSpotData(generateSpotPath());
-        setChartsReady(true);
+        let mounted = true;
+        let currentData: number[][] = [];
+
+        const fetchHistory = async () => {
+            try {
+                const res = await fetch('/api/market?history=true', { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.history && data.history.length > 0) {
+                    const filtered: number[][] = data.history
+                        .filter((p: any) => p.esf != null && isFrom1530(p.time))
+                        .map((p: any) => [timeStringToDate(p.time), p.esf as number]);
+                    if (mounted) {
+                        setSpotData(filtered);
+                        currentData = filtered;
+                    }
+                }
+            } catch { }
+        };
+
+        const fetchLive = async () => {
+            try {
+                const res = await fetch('/api/market', { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.esf == null) return;
+                const point: number[] = [Date.now(), data.esf];
+                currentData = [...currentData, point].slice(-2000);
+                if (mounted) setSpotData([...currentData]);
+            } catch { }
+        };
+
+        const init = async () => {
+            await fetchHistory();
+            if (!mounted) return;
+            setChartsReady(true);
+            // Poll live every 5s
+            intervalRef.current = setInterval(fetchLive, 5000);
+        };
+
+        init();
+        return () => {
+            mounted = false;
+            if (intervalRef.current) clearInterval(intervalRef.current);
+        };
     }, []);
 
     const option = useMemo(() => {
@@ -227,6 +270,8 @@ export default function SpxGammaPage() {
             ]
         };
     }, [chartsReady, spotData]);
+
+    const lastTime = spotData.length > 0 ? spotData[spotData.length - 1] : null;
 
     return (
         <div className="min-h-screen bg-[#0c0d10] text-slate-300 p-3 md:p-5 font-sans">

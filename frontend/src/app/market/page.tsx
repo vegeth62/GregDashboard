@@ -156,6 +156,7 @@ interface DataPoint {
     time: string;
     vix: number | null;
     esf: number | null;
+    spx?: number | null;
     coneUp?: number | null;
     coneDown?: number | null;
 }
@@ -163,23 +164,40 @@ interface DataPoint {
 interface ReferenceLines {
     r1Down: string;
     r2Down: string;
+    r3Down: string;
     r2Up: string;
+    r3Up: string;
     r1Up: string;
     r1DownOb: string;
     r2DownOb: string;
+    r3DownOb: string;
     r2UpOb: string;
+    r3UpOb: string;
     r1UpOb: string;
 }
 
 interface RefLineVisibility {
     r1Down: boolean;
     r2Down: boolean;
+    r3Down: boolean;
     r2Up: boolean;
+    r3Up: boolean;
     r1Up: boolean;
     r1DownOb: boolean;
     r2DownOb: boolean;
+    r3DownOb: boolean;
     r2UpOb: boolean;
+    r3UpOb: boolean;
     r1UpOb: boolean;
+}
+
+interface RangeCalcInput {
+    spx: string;
+    es: string;
+    callBid: string;
+    callAsk: string;
+    putBid: string;
+    putAsk: string;
 }
 
 // --- Helpers ---
@@ -224,23 +242,38 @@ export default function MarketPage() {
     const [refLines, setRefLines] = useState<ReferenceLines>({
         r1Down: '',
         r2Down: '',
+        r3Down: '',
         r2Up: '',
+        r3Up: '',
         r1Up: '',
         r1DownOb: '',
         r2DownOb: '',
+        r3DownOb: '',
         r2UpOb: '',
+        r3UpOb: '',
         r1UpOb: '',
     });
     const [refLineVisibility, setRefLineVisibility] = useState<RefLineVisibility>({
         r1Down: true,
         r2Down: true,
+        r3Down: true,
         r2Up: true,
+        r3Up: true,
         r1Up: true,
         r1DownOb: true,
         r2DownOb: true,
+        r3DownOb: true,
         r2UpOb: true,
+        r3UpOb: true,
         r1UpOb: true,
     });
+
+    // Range Calculator state
+    const emptyCalcInput: RangeCalcInput = { spx: '', es: '', callBid: '', callAsk: '', putBid: '', putAsk: '' };
+    const [showRangeCalc, setShowRangeCalc] = useState(false);
+    const [rangeCalcTab, setRangeCalcTab] = useState<'morning' | 'ob'>('morning');
+    const [rangeCalcMorning, setRangeCalcMorning] = useState<RangeCalcInput>(emptyCalcInput);
+    const [rangeCalcOb, setRangeCalcOb] = useState<RangeCalcInput>(emptyCalcInput);
 
     const intervalRef = useRef<NodeJS.Timeout | null>(null);
     const sessionWatchRef = useRef<NodeJS.Timeout | null>(null);
@@ -413,12 +446,20 @@ export default function MarketPage() {
 
         const newAnnotations: any = {};
         const baseConfigs = [
+            // Morning (solid)
             { key: 'r1Down', color: '#ef4444', dash: [] },
             { key: 'r2Down', color: '#f97316', dash: [] },
             { key: 'r3Down', color: '#facc15', dash: [] },
             { key: 'r1Up', color: '#3b82f6', dash: [] },
             { key: 'r2Up', color: '#06b6d4', dash: [] },
             { key: 'r3Up', color: '#10b981', dash: [] },
+            // Opening Bell (dashed)
+            { key: 'r1DownOb', color: '#ef4444', dash: [6, 3] },
+            { key: 'r2DownOb', color: '#f97316', dash: [6, 3] },
+            { key: 'r3DownOb', color: '#facc15', dash: [6, 3] },
+            { key: 'r1UpOb', color: '#3b82f6', dash: [6, 3] },
+            { key: 'r2UpOb', color: '#06b6d4', dash: [6, 3] },
+            { key: 'r3UpOb', color: '#10b981', dash: [6, 3] },
         ];
 
         baseConfigs.forEach(({ key, color, dash }) => {
@@ -579,6 +620,94 @@ export default function MarketPage() {
         localStorage.setItem('marketRefLineVisibility', JSON.stringify(refLineVisibility));
     }, [refLineVisibility]);
 
+    // ---- Range Calculator persistence ----
+    useEffect(() => {
+        const todayKey = getTodayKey();
+        const savedMorning = localStorage.getItem(`rangeCalc_morning_${todayKey}`);
+        if (savedMorning) {
+            try { setRangeCalcMorning(JSON.parse(savedMorning)); } catch { }
+        }
+        const savedOb = localStorage.getItem(`rangeCalc_ob_${todayKey}`);
+        if (savedOb) {
+            try { setRangeCalcOb(JSON.parse(savedOb)); } catch { }
+        }
+    }, []);
+
+    useEffect(() => {
+        const todayKey = getTodayKey();
+        localStorage.setItem(`rangeCalc_morning_${todayKey}`, JSON.stringify(rangeCalcMorning));
+    }, [rangeCalcMorning]);
+
+    useEffect(() => {
+        const todayKey = getTodayKey();
+        localStorage.setItem(`rangeCalc_ob_${todayKey}`, JSON.stringify(rangeCalcOb));
+    }, [rangeCalcOb]);
+
+    // ---- Range Calculator computation ----
+    const calcRange = useCallback((input: RangeCalcInput) => {
+        const spx = parseFloat(input.spx);
+        const es = parseFloat(input.es);
+        const callBid = parseFloat(input.callBid);
+        const callAsk = parseFloat(input.callAsk);
+        const putBid = parseFloat(input.putBid);
+        const putAsk = parseFloat(input.putAsk);
+
+        if ([spx, es, callBid, callAsk, putBid, putAsk].some(isNaN)) return null;
+
+        const basis = es - spx;
+        const callMid = (callBid + callAsk) / 2;
+        const putMid = (putBid + putAsk) / 2;
+        const straddle = callMid + putMid;
+        const sqrt3 = Math.sqrt(3);
+
+        return {
+            basis: Math.round(basis * 100) / 100,
+            callMid: Math.round(callMid * 100) / 100,
+            putMid: Math.round(putMid * 100) / 100,
+            straddle: Math.round(straddle * 100) / 100,
+            r1Up: Math.round((spx + straddle + basis) * 100) / 100,
+            r1Down: Math.round((spx - straddle + basis) * 100) / 100,
+            r2Up: Math.round((spx + straddle / sqrt3 + basis) * 100) / 100,
+            r2Down: Math.round((spx - straddle / sqrt3 + basis) * 100) / 100,
+            r3Up: Math.round((spx + straddle * sqrt3 + basis) * 100) / 100,
+            r3Down: Math.round((spx - straddle * sqrt3 + basis) * 100) / 100,
+        };
+    }, []);
+
+    const morningResults = useMemo(() => calcRange(rangeCalcMorning), [rangeCalcMorning, calcRange]);
+    const obResults = useMemo(() => calcRange(rangeCalcOb), [rangeCalcOb, calcRange]);
+
+    const applyToChart = useCallback((session: 'morning' | 'ob') => {
+        const results = session === 'morning' ? morningResults : obResults;
+        if (!results) return;
+
+        const suffix = session === 'ob' ? 'Ob' : '';
+        setRefLines(prev => ({
+            ...prev,
+            [`r1Up${suffix}`]: results.r1Up.toFixed(2),
+            [`r1Down${suffix}`]: results.r1Down.toFixed(2),
+            [`r2Up${suffix}`]: results.r2Up.toFixed(2),
+            [`r2Down${suffix}`]: results.r2Down.toFixed(2),
+            [`r3Up${suffix}`]: results.r3Up.toFixed(2),
+            [`r3Down${suffix}`]: results.r3Down.toFixed(2),
+        } as any));
+    }, [morningResults, obResults]);
+
+    const autoFillLivePrices = useCallback((session: 'morning' | 'ob') => {
+        const latestPoint = dataPoints.length > 0 ? dataPoints[dataPoints.length - 1] : null;
+        const esVal = latestPoint?.esf ?? (dataPoints.length > 0 ? dataPoints[dataPoints.length - 1].esf : null);
+        const spxVal = latestPoint?.spx ?? (esVal !== null && esVal !== undefined ? esVal - 15 : null);
+
+        const setInput = session === 'morning' ? setRangeCalcMorning : setRangeCalcOb;
+        if (esVal !== null && esVal !== undefined) {
+            setInput(prev => ({
+                ...prev,
+                es: esVal.toFixed(2),
+                spx: spxVal !== null && spxVal !== undefined ? spxVal.toFixed(2) : prev.spx,
+            }));
+        }
+    }, [dataPoints]);
+
     // ---- Persist intraday data to localStorage by date ----
     const persistDataPoints = useCallback((points: DataPoint[]) => {
         const key = `marketData_${getTodayKey()}`;
@@ -608,11 +737,26 @@ export default function MarketPage() {
                 hour12: false,
             });
 
+            // Automatic snapshot at 10:35 CET and 15:35 CET
+            if (data.esf !== null && data.esf !== undefined) {
+                const hours = now.getHours();
+                const minutes = now.getMinutes();
+                const esfStr = data.esf.toFixed(2);
+                const spxStr = data.spx ? data.spx.toFixed(2) : (data.esf - 15).toFixed(2);
+
+                if (hours === 10 && minutes === 35) {
+                    setRangeCalcMorning(prev => prev.es ? prev : { ...prev, es: esfStr, spx: spxStr });
+                } else if (hours === 15 && minutes === 35) {
+                    setRangeCalcOb(prev => prev.es ? prev : { ...prev, es: esfStr, spx: spxStr });
+                }
+            }
+
             setDataPoints((prev) => {
                 const newPoint: DataPoint = {
                     time: timeStr,
                     vix: data.vix,
                     esf: data.esf,
+                    spx: data.spx,
                     coneUp: data.coneUp,
                     coneDown: data.coneDown,
                 };
@@ -1179,12 +1323,24 @@ export default function MarketPage() {
                             ⚙️ Ref Lines
                         </button>
 
+                        {/* Range Calculator button */}
+                        <button
+                            onClick={() => setShowRangeCalc(!showRangeCalc)}
+                            className={`px-3 py-1.5 border rounded-lg text-xs font-bold transition-colors ${showRangeCalc
+                                ? 'bg-purple-600/30 text-purple-300 border-purple-500/50 hover:bg-purple-600/40'
+                                : 'bg-slate-700/50 hover:bg-slate-700 border-slate-600 text-slate-300'
+                            }`}
+                        >
+                            📐 Range Calc
+                        </button>
+
                         <button
                             onClick={() => router.push('/spx-volumes')}
                             className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 border border-blue-400 rounded-lg text-xs font-bold text-white transition-colors"
                         >
                             📊 VOLUMI SPX
                         </button>
+
 
 
 
@@ -1211,21 +1367,165 @@ export default function MarketPage() {
                     </div>
                 )}
 
+                {/* Range Calculator Panel */}
+                {showRangeCalc && (() => {
+                    const activeInput = rangeCalcTab === 'morning' ? rangeCalcMorning : rangeCalcOb;
+                    const setActiveInput = rangeCalcTab === 'morning' ? setRangeCalcMorning : setRangeCalcOb;
+                    const results = rangeCalcTab === 'morning' ? morningResults : obResults;
+                    const sessionLabel = rangeCalcTab === 'morning' ? 'Morning 10:35' : 'Opening Bell 15:35';
+
+                    return (
+                        <div className="bg-slate-800/80 backdrop-blur-sm border border-purple-500/30 rounded-xl p-5 mb-4">
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-lg font-semibold text-slate-200">📐 IV Range Calculator</h3>
+                                <div className="flex bg-slate-900 border border-slate-700 rounded-lg p-0.5">
+                                    <button
+                                        onClick={() => setRangeCalcTab('morning')}
+                                        className={`px-3 py-1 text-xs font-bold rounded transition-colors ${rangeCalcTab === 'morning' ? 'bg-purple-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                    >
+                                        🌅 Morning
+                                    </button>
+                                    <button
+                                        onClick={() => setRangeCalcTab('ob')}
+                                        className={`px-3 py-1 text-xs font-bold rounded transition-colors ${rangeCalcTab === 'ob' ? 'bg-purple-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                    >
+                                        🔔 Opening Bell
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-4 items-start">
+                                {/* Input Fields */}
+                                <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <p className="text-xs text-purple-300/70 font-medium uppercase tracking-wider">{sessionLabel} — Input</p>
+                                        <button
+                                            onClick={() => autoFillLivePrices(rangeCalcTab)}
+                                            className="px-2 py-0.5 bg-purple-600/30 hover:bg-purple-600/50 border border-purple-500/40 rounded text-[10px] font-semibold text-purple-200 transition-colors flex items-center gap-1"
+                                            title="Cattura prezzo ES e SPX correnti dal feed live"
+                                        >
+                                            ⚡ Auto-Fill Prezzi Live
+                                        </button>
+                                    </div>
+                                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                        {([
+                                            { key: 'spx', label: 'SPX Price' },
+                                            { key: 'es', label: 'ES Price' },
+                                            { key: 'callBid', label: 'ATM Call Bid' },
+                                            { key: 'callAsk', label: 'ATM Call Ask' },
+                                            { key: 'putBid', label: 'ATM Put Bid' },
+                                            { key: 'putAsk', label: 'ATM Put Ask' },
+                                        ] as const).map(({ key, label }) => (
+                                            <div key={key}>
+                                                <label className="block text-[10px] font-medium text-slate-400 mb-0.5">{label}</label>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={activeInput[key]}
+                                                    onChange={(e) => setActiveInput(prev => ({ ...prev, [key]: e.target.value }))}
+                                                    placeholder="0.00"
+                                                    className="w-full px-2 py-1.5 bg-slate-900/60 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-purple-500/50"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Divider */}
+                                <div className="hidden lg:flex items-center justify-center h-full">
+                                    <div className="w-px h-full bg-slate-700/50 min-h-[120px]"></div>
+                                </div>
+
+                                {/* Calculated Results */}
+                                <div>
+                                    <p className="text-xs text-purple-300/70 font-medium mb-2 uppercase tracking-wider">Risultati calcolati</p>
+                                    {results ? (
+                                        <div className="space-y-1.5">
+                                            {/* Intermediate values */}
+                                            <div className="grid grid-cols-4 gap-1.5 text-xs">
+                                                <div className="bg-slate-900/40 rounded px-2 py-1 border border-slate-700/30">
+                                                    <span className="text-slate-500">Basis</span>
+                                                    <span className="float-right text-slate-300 font-mono">{results.basis.toFixed(2)}</span>
+                                                </div>
+                                                <div className="bg-slate-900/40 rounded px-2 py-1 border border-slate-700/30">
+                                                    <span className="text-slate-500">Call Mid</span>
+                                                    <span className="float-right text-slate-300 font-mono">{results.callMid.toFixed(2)}</span>
+                                                </div>
+                                                <div className="bg-slate-900/40 rounded px-2 py-1 border border-slate-700/30">
+                                                    <span className="text-slate-500">Put Mid</span>
+                                                    <span className="float-right text-slate-300 font-mono">{results.putMid.toFixed(2)}</span>
+                                                </div>
+                                                <div className="bg-purple-900/30 rounded px-2 py-1 border border-purple-500/20">
+                                                    <span className="text-purple-300">Straddle</span>
+                                                    <span className="float-right text-purple-200 font-mono font-bold">{results.straddle.toFixed(2)}</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Range levels - ES prices */}
+                                            <div className="grid grid-cols-3 gap-1.5 text-xs mt-2">
+                                                <div className="bg-blue-900/20 rounded px-2 py-1.5 border border-blue-500/20">
+                                                    <span className="text-blue-400 font-bold">R1 Up</span>
+                                                    <span className="float-right text-blue-300 font-mono">{results.r1Up.toFixed(2)}</span>
+                                                </div>
+                                                <div className="bg-cyan-900/20 rounded px-2 py-1.5 border border-cyan-500/20">
+                                                    <span className="text-cyan-400 font-bold">R2 Up</span>
+                                                    <span className="float-right text-cyan-300 font-mono">{results.r2Up.toFixed(2)}</span>
+                                                </div>
+                                                <div className="bg-green-900/20 rounded px-2 py-1.5 border border-green-500/20">
+                                                    <span className="text-green-400 font-bold">R3 Up</span>
+                                                    <span className="float-right text-green-300 font-mono">{results.r3Up.toFixed(2)}</span>
+                                                </div>
+                                                <div className="bg-red-900/20 rounded px-2 py-1.5 border border-red-500/20">
+                                                    <span className="text-red-400 font-bold">R1 Down</span>
+                                                    <span className="float-right text-red-300 font-mono">{results.r1Down.toFixed(2)}</span>
+                                                </div>
+                                                <div className="bg-orange-900/20 rounded px-2 py-1.5 border border-orange-500/20">
+                                                    <span className="text-orange-400 font-bold">R2 Down</span>
+                                                    <span className="float-right text-orange-300 font-mono">{results.r2Down.toFixed(2)}</span>
+                                                </div>
+                                                <div className="bg-yellow-900/20 rounded px-2 py-1.5 border border-yellow-500/20">
+                                                    <span className="text-yellow-400 font-bold">R3 Down</span>
+                                                    <span className="float-right text-yellow-300 font-mono">{results.r3Down.toFixed(2)}</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Apply button */}
+                                            <button
+                                                onClick={() => applyToChart(rangeCalcTab)}
+                                                className="mt-2 w-full py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold rounded-lg transition-colors border border-purple-400/50 shadow-lg shadow-purple-900/30"
+                                            >
+                                                ✅ APPLY {rangeCalcTab === 'morning' ? 'MORNING' : 'OB'} RANGES TO CHART
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <div className="flex items-center justify-center h-[120px] text-slate-500 text-sm">
+                                            <p>Inserisci tutti i valori per calcolare i range</p>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })()}
 
                 {/* Reference Lines Panel */}
                 {showSettings && (
                     <div className="bg-slate-800/80 backdrop-blur-sm border border-slate-700/50 rounded-xl p-5 mb-6">
                         <h3 className="text-lg font-semibold mb-4 text-slate-200">Reference Lines (ES=F)</h3>
-                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
+                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
                             {([
                                 { key: 'r1Down', label: 'R1 Down', colorClass: 'text-red-400', ringClass: 'focus:ring-red-500/50' },
-                                { key: 'r1DownOb', label: 'R1D OB (Dash)', colorClass: 'text-red-400/70', ringClass: 'focus:ring-red-500/50' },
+                                { key: 'r1DownOb', label: 'R1 Down OB', colorClass: 'text-red-400/70', ringClass: 'focus:ring-red-500/50' },
                                 { key: 'r2Down', label: 'R2 Down', colorClass: 'text-orange-400', ringClass: 'focus:ring-orange-500/50' },
-                                { key: 'r2DownOb', label: 'R2D OB (Dash)', colorClass: 'text-orange-400/70', ringClass: 'focus:ring-orange-500/50' },
-                                { key: 'r2Up', label: 'R2 Up', colorClass: 'text-cyan-400', ringClass: 'focus:ring-cyan-500/50' },
-                                { key: 'r2UpOb', label: 'R2U OB (Dash)', colorClass: 'text-cyan-400/70', ringClass: 'focus:ring-cyan-500/50' },
+                                { key: 'r2DownOb', label: 'R2 Down OB', colorClass: 'text-orange-400/70', ringClass: 'focus:ring-orange-500/50' },
+                                { key: 'r3Down', label: 'R3 Down', colorClass: 'text-yellow-400', ringClass: 'focus:ring-yellow-500/50' },
+                                { key: 'r3DownOb', label: 'R3 Down OB', colorClass: 'text-yellow-400/70', ringClass: 'focus:ring-yellow-500/50' },
                                 { key: 'r1Up', label: 'R1 Up', colorClass: 'text-blue-400', ringClass: 'focus:ring-blue-500/50' },
-                                { key: 'r1UpOb', label: 'R1U OB (Dash)', colorClass: 'text-blue-400/70', ringClass: 'focus:ring-blue-500/50' },
+                                { key: 'r1UpOb', label: 'R1 Up OB', colorClass: 'text-blue-400/70', ringClass: 'focus:ring-blue-500/50' },
+                                { key: 'r2Up', label: 'R2 Up', colorClass: 'text-cyan-400', ringClass: 'focus:ring-cyan-500/50' },
+                                { key: 'r2UpOb', label: 'R2 Up OB', colorClass: 'text-cyan-400/70', ringClass: 'focus:ring-cyan-500/50' },
+                                { key: 'r3Up', label: 'R3 Up', colorClass: 'text-green-400', ringClass: 'focus:ring-green-500/50' },
+                                { key: 'r3UpOb', label: 'R3 Up OB', colorClass: 'text-green-400/70', ringClass: 'focus:ring-green-500/50' },
                             ] as const).map(({ key, label, colorClass, ringClass }) => (
                                 <div key={key} className="bg-slate-900/30 p-2 rounded-lg border border-slate-700/30">
                                     <div className="flex items-center justify-between mb-1">
@@ -1260,7 +1560,6 @@ export default function MarketPage() {
                         </div>
                     </div>
                 )}
-
 
                 {/* Chart Area */}
                 {activeTab === 'market' ? (
@@ -1337,7 +1636,7 @@ export default function MarketPage() {
                       </div>
                     ) : (
                       <div className="w-full h-[calc(100vh-240px)] min-h-[400px] bg-[#0c0d10] border border-slate-800/50 rounded-lg p-4 shadow-2xl">
-                        <GexPage dataPoints={dataPoints} />
+                        <GexPage />
                       </div>
                     )}
                 {/* Footer */}

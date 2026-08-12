@@ -138,7 +138,18 @@ Prova Greg/
 ### 5.6 SPX Volumes (Grafico 3D)
 - **Route**: `/spx-volumes` (collegato da Market Monitor).
 - **Engine**: `echarts` + `echarts-gl` per visualizzare i volumi di Call e Put in 3D.
-- **Traccia Prezzo (SPX Price Line)**: Disegnata come una linea 3D giallo acceso (`#ffff00`) che segue lo strike più vicino al prezzo di SPX nel tempo. L'altezza (asse Z) è impostata al picco massimo del volume a quel passo temporale (`localMaxVol * 1.02`) per rimanere appena sopra le barre ed essere sempre visibile.
+- **Traccia Prezzo (SPX Price Line)**: Disegnata come una linea 3D giallo acceso (`#ffff00`) che segue lo strike più vicino al prezzo di SPX nel tempo.
+
+### 5.7 Intraday Implied Volatility Range Model
+- **Pannello**: `📐 Range Calc` integrato in `/market` per inserire dati ATM opzioni SPX alle **10:35** (Morning) e **15:35** (Opening Bell).
+- **Formule Range**:
+  - `Straddle ATM` = `Call Mid + Put Mid`
+  - `Basis` = `ES - SPX`
+  - `R1 Up/Down` = `SPX ± Straddle + Basis`
+  - `R2 Up/Down` = `SPX ± (Straddle / √3) + Basis`
+  - `R3 Up/Down` = `SPX ± (Straddle × √3) + Basis`
+- **Reference Lines**: 12 livelli totali supportati (6 Morning continue + 6 Opening Bell tratteggiate). Tasto **APPLY TO CHART** invia i livelli calcolati alle linee sul grafico ES.
+- **Persistence**: Salvataggio giornaliero in `localStorage` (`rangeCalc_morning_YYYY-MM-DD` e `rangeCalc_ob_YYYY-MM-DD`).
 
 ---
 
@@ -224,4 +235,4 @@ git add -A && git commit -m "..." && git push origin main
 
 ---
 
-*Ultima modifica: 2026-06-10 — Antigravity AI*
+*Ultima modifica: 2026-07-26 — Antigravity AI*

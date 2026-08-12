@@ -78,6 +78,8 @@ def push_to_supabase(point):
             "time": point["time"],
             "date": get_today_key()
         }
+        if "spx" in point and point["spx"] is not None:
+            data["spx"] = point["spx"]
         supabase.table("market_data").insert(data).execute()
     except Exception as e:
         print(f"Error pushing to Supabase: {e}", file=sys.stderr)
@@ -190,38 +192,58 @@ def main():
                         target_120 = spx * 1.20
                         
                         atm_strike = min(strikes, key=lambda x: abs(x - spx))
-                        
-                        # Find best strikes for skew analysis
                         put90_strike = min(strikes, key=lambda x: abs(x - target_90))
                         call120_strike = min(strikes, key=lambda x: abs(x - target_120))
-                        
                         trading_class = chain.tradingClass
+
+                        # 0DTE / nearest expiration for Intraday Range calculation
+                        exp_0dte = expirations[0]
+                        atm_0dte_c = Option('SPX', exp_0dte, atm_strike, 'C', 'CBOE', multiplier='100', tradingClass=trading_class)
+                        atm_0dte_p = Option('SPX', exp_0dte, atm_strike, 'P', 'CBOE', multiplier='100', tradingClass=trading_class)
                         atm_c = Option('SPX', target_exp, atm_strike, 'C', 'CBOE', multiplier='100', tradingClass=trading_class)
                         put90_c = Option('SPX', target_exp, put90_strike, 'P', 'CBOE', multiplier='100', tradingClass=trading_class)
                         call120_c = Option('SPX', target_exp, call120_strike, 'C', 'CBOE', multiplier='100', tradingClass=trading_class)
                         
-                        print(f"Qualifying: Exp={target_exp}, ATM={atm_strike}, P90={put90_strike}, C120={call120_strike} ({trading_class})")
-                        qualified = ib.qualifyContracts(atm_c, put90_c, call120_c)
+                        print(f"Qualifying: Exp0DTE={exp_0dte}, ATM={atm_strike}, ExpVolTide={target_exp}, P90={put90_strike}, C120={call120_strike} ({trading_class})")
+                        qualified = ib.qualifyContracts(atm_0dte_c, atm_0dte_p, atm_c, put90_c, call120_c)
                         
                         # Cancel old
                         for t in option_tickers:
                             ib.cancelMktData(t.contract)
                             
-                        # Request new (with greeks - 106)
+                        # Request new
                         option_tickers = []
-                        if atm_c in qualified: option_tickers.append(ib.reqMktData(atm_c, '106', False, False))
+                        if atm_0dte_c in qualified: option_tickers.append(ib.reqMktData(atm_0dte_c, '106', False, False))
+                        if atm_0dte_p in qualified: option_tickers.append(ib.reqMktData(atm_0dte_p, '106', False, False))
+                        if atm_c in qualified and atm_c not in option_tickers: option_tickers.append(ib.reqMktData(atm_c, '106', False, False))
                         if put90_c in qualified: option_tickers.append(ib.reqMktData(put90_c, '106', False, False))
                         if call120_c in qualified: option_tickers.append(ib.reqMktData(call120_c, '106', False, False))
                         
                         last_skew_update = timestamp
-                        print(f"Active Tickers: {len(option_tickers)}/{3} (Qualified: {[c.strike for c in qualified]})")
+                        print(f"Active Tickers: {len(option_tickers)} (Qualified: {[c.strike for c in qualified]})")
 
-            # 2. Calculate VolTide Score
+            # 2. Calculate VolTide Score & ATM Option Quotes
+            atm_call_bid = None
+            atm_call_ask = None
+            atm_put_bid = None
+            atm_put_ask = None
+
             if len(option_tickers) >= 2:
-                # Find the Put 90 and Call 120 (if they exist in tickers)
-                put_t = next((t for t in option_tickers if t.contract.right == 'P'), None)
+                # Find ATM 0DTE Call and Put tickers
+                c_0dte_t = next((t for t in option_tickers if t.contract.right == 'C' and t.contract.strike == atm_strike), None)
+                p_0dte_t = next((t for t in option_tickers if t.contract.right == 'P' and t.contract.strike == atm_strike), None)
+
+                if c_0dte_t:
+                    if c_0dte_t.bid and c_0dte_t.bid > 0: atm_call_bid = round(float(c_0dte_t.bid), 2)
+                    if c_0dte_t.ask and c_0dte_t.ask > 0: atm_call_ask = round(float(c_0dte_t.ask), 2)
+                if p_0dte_t:
+                    if p_0dte_t.bid and p_0dte_t.bid > 0: atm_put_bid = round(float(p_0dte_t.bid), 2)
+                    if p_0dte_t.ask and p_0dte_t.ask > 0: atm_put_ask = round(float(p_0dte_t.ask), 2)
+
+                # Find the Put 90 and Call 120
+                put_t = next((t for t in option_tickers if t.contract.right == 'P' and t.contract.strike != atm_strike), None)
                 call_t = next((t for t in option_tickers if t.contract.right == 'C' and t.contract.strike > spx), None)
-                atm_t = next((t for t in option_tickers if t.contract.right == 'C' and t.contract.strike <= spx), None)
+                atm_t = c_0dte_t or next((t for t in option_tickers if t.contract.right == 'C' and t.contract.strike <= spx), None)
                 
                 # Use modelGreeks safely
                 put_iv = put_t.modelGreeks.impliedVol if (put_t and put_t.modelGreeks and put_t.modelGreeks.impliedVol) else None
@@ -241,15 +263,21 @@ def main():
             if vix == vix and esf == esf and vix > 0 and esf > 0:
                 vix_rounded = round(float(vix), 2)
                 esf_rounded = round(float(esf), 2)
+                spx_rounded = round(float(spx), 2) if (spx and spx == spx and spx > 0) else None
                 time_str = now.strftime('%H:%M:%S')
                 
                 point = {
                     "time": time_str, 
                     "vix": vix_rounded, 
                     "esf": esf_rounded,
+                    "spx": spx_rounded,
                     "volTide": vol_tide_score,
                     "coneUp": cone_up,
-                    "coneDown": cone_down
+                    "coneDown": cone_down,
+                    "callBid": atm_call_bid,
+                    "callAsk": atm_call_ask,
+                    "putBid": atm_put_bid,
+                    "putAsk": atm_put_ask
                 }
                 
                 # Save locally
