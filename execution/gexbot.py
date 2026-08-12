@@ -1,18 +1,33 @@
-import json, random, datetime, os, urllib.request
+import json, random, datetime, os, sys
+
+try:
+    from ib_insync import IB, Index
+except ImportError:
+    print("Error: ib_insync is not installed. Please run 'pip install ib_insync'.")
+    sys.exit(1)
 
 def get_current_spx():
-    """Fetch current SPX price from Yahoo Finance API using urllib."""
+    """Fetch current SPX price from the local IBKR TWS API."""
+    ib = IB()
     try:
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/^SPX?interval=1m&range=1d"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as response:
-            res_data = json.loads(response.read().decode())
-            price = res_data['chart']['result'][0]['meta']['regularMarketPrice']
-            if price:
-                return float(price)
+        ib.connect('127.0.0.1', 7496, clientId=random.randint(1000, 9999), timeout=10)
+        ib.reqMarketDataType(1)
+
+        spx_contract = Index('SPX', 'CBOE')
+        ib.qualifyContracts(spx_contract)
+        spx_ticker = ib.reqMktData(spx_contract, '', False, False)
+        ib.sleep(3)
+
+        price = spx_ticker.marketPrice()
+        if price == price and price > 0:
+            return float(price)
     except Exception as e:
-        print(f"Error fetching SPX price, using default: {e}")
-    return 7475.0 # Realistic fallback SPX price
+        print(f"Error fetching SPX price from IBKR: {e}")
+    finally:
+        if ib.isConnected():
+            ib.disconnect()
+
+    raise RuntimeError("No valid SPX price available from IBKR TWS API")
 
 def generate_gex_data(num_points=300):
     """Generate synthetic GEX data centered around the current SPX price.
