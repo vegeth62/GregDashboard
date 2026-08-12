@@ -14,6 +14,7 @@ import {
   Legend
 } from 'chart.js';
 import 'chartjs-adapter-date-fns';
+import SyntheticDataBadge from '@/components/SyntheticDataBadge';
 
 // Base registration (safe for SSR)
 ChartJS.register(
@@ -568,6 +569,7 @@ export default function GexPage() {
 
   return (
     <div className="w-full h-full bg-[#0c0d10] p-2 flex flex-col justify-between">
+      <SyntheticDataBadge />
       {error && (
         <div className="text-red-400 bg-red-950/30 border border-red-900/50 p-2 rounded text-xs mb-2">⚠️ {error}</div>
       )}

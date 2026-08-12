@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
+import SyntheticDataBadge from '@/components/SyntheticDataBadge';
 
 const ReactECharts = dynamic(() => import('echarts-for-react'), { ssr: false });
 
@@ -276,6 +277,7 @@ export default function SpxGammaPage() {
     return (
         <div className="min-h-screen bg-[#0c0d10] text-slate-300 p-3 md:p-5 font-sans">
             <div className="w-full max-w-[1920px] mx-auto">
+                <SyntheticDataBadge />
                 <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">
                         <h1 className="text-2xl font-bold bg-gradient-to-r from-emerald-400 to-teal-400 bg-clip-text text-transparent">

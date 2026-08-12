@@ -15,6 +15,10 @@ tmp/
 !tsconfig.json
 !project.json
 
+# bytecode Python
+__pycache__/
+*.pyc
+
 # scratch pad locale (contiene node_modules)
 scratch/
 # output di graphify (graph.html, graph.json, GRAPH_REPORT.md)
