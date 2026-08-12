@@ -14,3 +14,8 @@ tmp/
 !package.json
 !tsconfig.json
 !project.json
+
+# scratch pad locale (contiene node_modules)
+scratch/
+# output di graphify (graph.html, graph.json, GRAPH_REPORT.md)
+graphify-out/
