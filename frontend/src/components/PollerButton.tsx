@@ -2,14 +2,17 @@
 import { useState } from 'react';
 
 export default function PollerButton() {
-    const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+    const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'running' | 'error'>('idle');
 
     const startPollers = async () => {
         setStatus('loading');
         try {
             const res = await fetch('/api/poller', { method: 'POST' });
+            const data = await res.json().catch(() => null);
             if (res.ok) {
-                setStatus('success');
+                // I poller partono da soli col server: `started: false` significa
+                // che erano già attivi, non che l'avvio è fallito.
+                setStatus(data?.started === false ? 'running' : 'success');
                 setTimeout(() => setStatus('idle'), 3000);
             } else {
                 setStatus('error');
@@ -39,6 +42,12 @@ export default function PollerButton() {
                 <>
                     <span className="w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse"></span>
                     Avviati!
+                </>
+            )}
+            {status === 'running' && (
+                <>
+                    <span className="w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)]"></span>
+                    Già attivi
                 </>
             )}
             {status === 'error' && (

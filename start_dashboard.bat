@@ -2,13 +2,11 @@
 title Greg Dashboard - Start All
 cd /d "%~dp0"
 
-echo [1/3] Avvio tws_poller.py (VIX e ES=F)...
-start /B python execution\tws_poller.py
+echo Avvio Frontend (Next.js)...
+echo I poller (tws_poller.py + tws_volumes_poller.py) partono da soli
+echo insieme al server, via frontend\src\instrumentation.ts
+echo.
 
-echo [2/3] Avvio tws_volumes_poller.py (SPX Volumes)...
-start /B python execution\tws_volumes_poller.py
-
-echo [3/3] Avvio Frontend (Next.js)...
 cd frontend
 start http://localhost:3000
 npm run dev
