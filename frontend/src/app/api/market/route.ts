@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import fs from 'fs';
 import path from 'path';
-import { Client } from 'pg';
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
@@ -11,29 +10,8 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 export const dynamic = 'force-dynamic';
 
-let isMigrated = false;
-async function runMigration() {
-    if (isMigrated) return;
-    try {
-        const client = new Client({
-            host: process.env.POSTGRES_HOST || 'db.fssneiurouyvtbqifhso.supabase.co',
-            user: process.env.POSTGRES_USER || 'postgres',
-            password: process.env.POSTGRES_PASSWORD || '17HyIdcGzviuvH9l',
-            database: process.env.POSTGRES_DATABASE || 'postgres',
-            port: 5432,
-            ssl: {
-                rejectUnauthorized: false
-            }
-        });
-        await client.connect();
-        await client.query('ALTER TABLE market_data ADD COLUMN IF NOT EXISTS spx FLOAT8;');
-        await client.end();
-        isMigrated = true;
-        console.log('Supabase migration succeeded: spx column is ready.');
-    } catch (e) {
-        console.error('Supabase migration error:', e);
-    }
-}
+// La colonna `spx` fa parte dello schema di market_data: la migrazione a
+// runtime che la aggiungeva (con credenziali Postgres dirette) non serve piu'.
 
 function getTodayKey() {
     const now = new Date();
@@ -45,7 +23,6 @@ function getTodayKey() {
 
 export async function GET(request: Request) {
     try {
-        await runMigration();
         const { searchParams } = new URL(request.url);
         const historyMode = searchParams.get('history') === 'true';
         const dateParam = searchParams.get('date'); // e.g. ?date=2026-02-19
