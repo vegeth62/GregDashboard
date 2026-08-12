@@ -5,6 +5,7 @@ import path from 'path';
 // Next runs from `frontend/`, i poller vivono nella root del repo.
 const ROOT_DIR = path.join(process.cwd(), '..');
 const LOCK_FILE = path.join(ROOT_DIR, '.tmp', 'pollers.lock');
+const LOG_DIR = path.join(ROOT_DIR, '.tmp', 'poller-logs');
 
 const POLLER_SCRIPTS = [
     'execution/tws_poller.py',
@@ -59,18 +60,30 @@ export function startPollers({ force = false } = {}): StartResult {
         };
     }
 
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+
     const pids: number[] = [];
     for (const script of POLLER_SCRIPTS) {
-        const child = spawn('python', [script], {
+        // Senza questo l'output finiva in 'ignore': un push su Supabase che
+        // falliva restava invisibile per mesi. Ora ogni poller ha il suo log.
+        const logFile = path.join(LOG_DIR, `${path.basename(script, '.py')}.log`);
+        const fd = fs.openSync(logFile, 'a');
+        fs.writeSync(fd, `\n=== avvio ${new Date().toISOString()} ===\n`);
+
+        // `-u` disattiva il buffering di Python, altrimenti il log resta
+        // vuoto finche' il buffer non si riempie.
+        const child = spawn('python', ['-u', script], {
             cwd: ROOT_DIR,
             detached: true,
-            stdio: 'ignore',
+            stdio: ['ignore', fd, fd],
         });
         // spawn non lancia in modo sincrono se `python` non è nel PATH.
         child.on('error', (err) => {
             console.error(`[pollers] impossibile avviare ${script}:`, err.message);
         });
         child.unref();
+        // Il figlio ha la sua copia del descrittore: qui possiamo chiuderlo.
+        fs.closeSync(fd);
         if (child.pid) pids.push(child.pid);
     }
 
@@ -81,6 +94,6 @@ export function startPollers({ force = false } = {}): StartResult {
     return {
         started: true,
         pids,
-        message: `Poller avviati (PID ${pids.join(', ')})`,
+        message: `Poller avviati (PID ${pids.join(', ')}) - log in .tmp/poller-logs/`,
     };
 }
