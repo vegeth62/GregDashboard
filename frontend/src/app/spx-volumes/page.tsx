@@ -153,9 +153,20 @@ function build3DOption(
     };
 }
 
+// Quanti snapshot disegnare, a 10 s l'uno. Ora che il trasporto e' incrementale
+// il browser ha in memoria l'intera sessione: quanta mostrarne e' solo una
+// questione di quanti bar3D regge echarts-gl (~37 barre per snapshot).
+const WINDOW_OPTIONS = [
+    { label: '16 min', value: 100 },
+    { label: '1 ora', value: 360 },
+    { label: '3 ore', value: 1080 },
+    { label: 'Sessione', value: 0 },
+];
+
 export default function SpxVolumesPage() {
     const router = useRouter();
     const [history, setHistory] = useState<VolumeSnapshot[]>([]);
+    const [windowSize, setWindowSize] = useState(360);
     const [chartsReady, setChartsReady] = useState(false);
     
     // Core references
@@ -164,12 +175,27 @@ export default function SpxVolumesPage() {
     const putChartRef = useRef<any>(null);
     const savedCallView = useRef<any>(null);
     const savedPutView = useRef<any>(null);
+    // Ultimo snapshot gia' in memoria: la route restituisce solo i successivi.
+    const lastTimeRef = useRef<string | null>(null);
+    const sessionDateRef = useRef<string | null>(null);
 
     const fetchData = async () => {
         try {
-            const res = await fetch('/api/volumes', { cache: 'no-store' });
+            const since = lastTimeRef.current;
+            const url = since ? `/api/volumes?since=${encodeURIComponent(since)}` : '/api/volumes';
+            const res = await fetch(url, { cache: 'no-store' });
             if (res.ok) {
                 const data = await res.json();
+
+                // Cambio di giornata: si riparte da zero, senza `since`.
+                if (data.date && sessionDateRef.current && data.date !== sessionDateRef.current) {
+                    sessionDateRef.current = data.date;
+                    lastTimeRef.current = null;
+                    setHistory([]);
+                    return;
+                }
+                if (data.date) sessionDateRef.current = data.date;
+
                 if (data.history) {
                     // Pre-capture user's current camera angles before setting new history
                     if (callChartRef.current) {
@@ -192,7 +218,16 @@ export default function SpxVolumesPage() {
                     }
 
                     // Update memory with new snapshots
-                    setHistory(data.history);
+                    const incoming: VolumeSnapshot[] = data.history;
+                    if (incoming.length > 0) {
+                        lastTimeRef.current = incoming[incoming.length - 1].time;
+                    }
+                    if (since) {
+                        // Risposta incrementale: si accoda, non si sostituisce.
+                        if (incoming.length > 0) setHistory(prev => [...prev, ...incoming]);
+                    } else {
+                        setHistory(incoming);
+                    }
                 }
             }
         } catch (e) {
@@ -212,7 +247,7 @@ export default function SpxVolumesPage() {
 
         loadCharts();
         fetchData();
-        intervalRef.current = setInterval(fetchData, 10000);
+        intervalRef.current = setInterval(fetchData, 30000);
         return () => {
             active = false;
             if (intervalRef.current) clearInterval(intervalRef.current);
@@ -220,11 +255,17 @@ export default function SpxVolumesPage() {
     }, []);
 
     const { strikes, times, callsData, putsData, maxCallVol, maxPutVol, spxPathIndices } = useMemo(() => {
+        // I volumi sono cumulati dall'apertura: il grafico mostra il delta
+        // rispetto al primo snapshot *visibile*, quindi la finestra definisce
+        // anche la baseline. Era il comportamento di prima, con la finestra
+        // fissata a 100 snapshot dal poller.
+        const visible = windowSize > 0 ? history.slice(-windowSize) : history;
+
         const timesArr: string[] = [];
         const strikesSet = new Set<number>();
         let openSPX: number | null = null;
 
-        history.forEach(snapshot => {
+        visible.forEach(snapshot => {
             timesArr.push(snapshot.time);
             if (snapshot.isOpening && snapshot.spxPrice) {
                 openSPX = snapshot.spxPrice;
@@ -235,7 +276,7 @@ export default function SpxVolumesPage() {
         const strikesArr = Array.from(strikesSet).sort((a, b) => a - b);
         
         // Find the index of the strike closest to the SPX price at EACH time step
-        const spxPathIndices: number[] = history.map(snapshot => {
+        const spxPathIndices: number[] = visible.map(snapshot => {
             if (!snapshot.spxPrice) return -1;
             let minDiff = Infinity;
             let closestIdx = -1;
@@ -257,7 +298,7 @@ export default function SpxVolumesPage() {
         const initialCallVol = new Map<number, number>();
         const initialPutVol = new Map<number, number>();
 
-        history.forEach((snapshot, timeIndex) => {
+        visible.forEach((snapshot, timeIndex) => {
             snapshot.volumes.forEach(v => {
                 const strikeIndex = strikesArr.indexOf(v.strike);
                 if (strikeIndex === -1) return;
@@ -291,7 +332,7 @@ export default function SpxVolumesPage() {
             maxPutVol: maxP,
             spxPathIndices
         };
-    }, [history]);
+    }, [history, windowSize]);
 
 
     const callColors = ['#ffffff', '#e0c3fc', '#c084fc', '#a855f7', '#7c3aed', '#5b21b6', '#3b0764'];
@@ -319,6 +360,21 @@ export default function SpxVolumesPage() {
                         {lastTime && (
                             <span className="text-slate-500 text-xs">Last: {lastTime} ({snapshotCount} snaps)</span>
                         )}
+                        <div className="flex items-center gap-1">
+                            {WINDOW_OPTIONS.map(opt => (
+                                <button
+                                    key={opt.value}
+                                    onClick={() => setWindowSize(opt.value)}
+                                    className={`px-2 py-0.5 rounded text-[10px] border transition-colors ${
+                                        windowSize === opt.value
+                                            ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                                            : 'bg-slate-800/60 text-slate-500 border-slate-700 hover:text-slate-300'
+                                    }`}
+                                >
+                                    {opt.label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                     <button
                         onClick={() => router.push('/market')}

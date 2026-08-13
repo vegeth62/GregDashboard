@@ -23,9 +23,6 @@ except ImportError:
 
 # Configuration
 POLL_INTERVAL = 10  # seconds
-# La giornata intera (max 100 snapshot, ~180 KB) viaggia a ogni push, quindi
-# si spinge molto piu' di rado del polling: alzalo se la banda e' un problema.
-SUPABASE_PUSH_INTERVAL = int(os.getenv("VOLUMES_PUSH_INTERVAL", "30"))
 START_HOUR = 8  # 14:30 Italian = 8:30 Eastern inside IBKR usually, but let's use local machine time
 # Assuming local machine is CET
 START_TIME_MINUTES = 13 * 60 + 30  # Adjusted for immediate testing
@@ -56,33 +53,40 @@ def read_session_file(date_key):
         print(f"Error reading file {file_path}: {e}")
         return []
 
+# Copia in memoria della sessione corrente: il file viene riscritto per intero
+# a ogni snapshot, ma senza rileggerlo e rideserializzarlo ogni volta.
+_session_cache = {"date": None, "snapshots": []}
+
 def append_to_session_file(date_key, snapshot):
     ensure_data_dir()
-    existing = read_session_file(date_key)
-    existing.append(snapshot)
-    
-    # Keep only the last 100 snapshots to ensure performance
-    if len(existing) > 100:
-        existing = existing[-100:]
-        
+
+    if _session_cache["date"] != date_key:
+        # Primo snapshot del giorno (o poller riavviato a meta' sessione):
+        # si riparte da quello che c'e' gia' su disco.
+        _session_cache["date"] = date_key
+        _session_cache["snapshots"] = read_session_file(date_key)
+
+    _session_cache["snapshots"].append(snapshot)
+
     file_path = get_file_path(date_key)
     try:
         # Write to temporary file, then rename for atomicity
         temp_file = file_path + ".tmp"
         with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(existing, f, separators=(',', ':'))
+            json.dump(_session_cache["snapshots"], f, separators=(',', ':'))
         os.replace(temp_file, file_path)
     except Exception as e:
         print(f"Error writing to file {file_path}: {e}")
 
 _supabase_client = None
 
-def push_volumes_to_supabase(date_key, snapshots):
-    """Upsert dell'intera giornata come singola riga JSONB.
+def push_snapshot_to_supabase(date_key, snapshot):
+    """Inserisce il singolo snapshot appena prodotto (~1,8 KB).
 
-    Una riga per strike per snapshot farebbe ~100k righe al giorno; qui il
-    pattern di lettura e' comunque 'dammi tutta la giornata', quindi conviene
-    un blob solo.
+    Prima si spingeva l'intera sessione come una riga JSONB: ~200 KB a ogni
+    push, piu' altrettanti rimandati indietro da PostgREST. Con una riga per
+    snapshot il client puo' chiedere solo i nuovi, e `returning=minimal`
+    elimina l'eco della risposta.
     """
     global _supabase_client
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -90,13 +94,15 @@ def push_volumes_to_supabase(date_key, snapshots):
     try:
         if _supabase_client is None:
             _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        _supabase_client.table("volumes_data").upsert({
+        _supabase_client.table("volumes_snapshots").upsert({
             "date": date_key,
-            "payload": snapshots,
-        }, on_conflict="date").execute()
-        print(f"Supabase: caricati {len(snapshots)} snapshot per {date_key}")
+            "time": snapshot["time"],
+            "spx_price": snapshot["spxPrice"],
+            "is_opening": snapshot["isOpening"],
+            "volumes": snapshot["volumes"],
+        }, on_conflict="date,time", returning="minimal").execute()
     except Exception as e:
-        print(f"Error pushing volumes to Supabase: {e}", file=sys.stderr)
+        print(f"Error pushing snapshot to Supabase: {e}", file=sys.stderr)
 
 def main():
     print("Starting Volumes Poller background service (IBKR TWS API)...")
@@ -229,8 +235,6 @@ def main():
     ib.sleep(5)
 
     last_poll = 0
-    last_push = 0
-    today_key = get_today_key()
     open_spx_captured = False
 
     while True:
@@ -245,7 +249,10 @@ def main():
         if is_active:
             if timestamp - last_poll >= POLL_INTERVAL:
                 time_str = now.strftime('%H:%M:%S')
-                
+                # Ricalcolato a ogni giro: il poller resta acceso tra una
+                # sessione e l'altra e la data cambia sotto di lui.
+                today_key = get_today_key()
+
                 # Capture current SPX price
                 current_spx = spx_ticker.marketPrice()
                 if not current_spx or current_spx != current_spx:
@@ -295,10 +302,7 @@ def main():
                 }
                 
                 append_to_session_file(today_key, snapshot)
-
-                if timestamp - last_push >= SUPABASE_PUSH_INTERVAL:
-                    push_volumes_to_supabase(today_key, read_session_file(today_key))
-                    last_push = timestamp
+                push_snapshot_to_supabase(today_key, snapshot)
 
                 last_poll = timestamp
         else:

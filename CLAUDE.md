@@ -44,10 +44,12 @@ Python pollers (`execution/tws_poller.py`, `execution/tws_volumes_poller.py`) co
 
 Next.js API routes (`frontend/src/app/api/*/route.ts`) read this data back out:
 - `GET /api/market` — Supabase first if configured, else local JSON fallback. No params = latest point; `?history=true` = today's intraday series; `?date=YYYY-MM-DD` = archived session.
-- `GET /api/volumes` — local JSON only, same date param convention.
-- `GET /api/gex` — reads `data/gex/<date>.json`; if missing, shells out to `execution/gexbot.py` to synthesize data (local-only, uses `child_process.execFile('python', ...)`).
+- `GET /api/volumes` — Supabase table `volumes_snapshots` (una riga per snapshot) first, local JSON fallback. `?date=YYYY-MM-DD` as above; `?since=HH:MM:SS` returns only the snapshots after that time, which is how the page stays cheap — it fetches ~2 KB every 30s instead of re-downloading the session.
+- `GET /api/gex` — generates **synthetic** gamma exposure in TypeScript (port of `execution/gexbot.py`, which is no longer invoked). Only the SPX reference price is real, read from Supabase `market_data.spx` with a local JSON fallback; 503 if no IBKR price exists yet. `/gex` and `/spx-gamma` show a `SyntheticDataBadge` because of this.
 - `POST /api/poller` — spawns both pollers as detached background processes via `child_process.spawn('python', ...)`. Only works when the API itself is running locally (there's a "start pollers" button in the UI backed by this route, `PollerButton.tsx`).
-- `POST /api/finance` — spawns `execution/save_transaction.py` to append to `.tmp/transactions.csv`. Local-only; does not work on Vercel (no Python runtime there).
+- `POST /api/finance` / `GET /api/finance` — writes to / reads from the Supabase `transactions` table, falling back to appending `.tmp/transactions.csv` when Supabase is not configured. The old `spawn('python3', ...)` is gone (it never worked on Windows and never worked on Vercel).
+
+**Supabase egress is the binding constraint, not database size.** The free tier allows ~5 GB/month of egress, and the volumes path is what spends it: every extra KB moves ~3.000 times a day. Two rules keep it in budget — writes from the pollers must pass `returning="minimal"` (PostgREST otherwise echoes the whole inserted row back), and the volumes page must fetch incrementally via `?since=`. Reverting either one costs hundreds of MB per trading day. See `sql/001_volumes_snapshots.sql`.
 
 **Known path inconsistency (real, not hypothetical):** pollers write market/volume JSON to `frontend/data/market` and `frontend/data/volumes`, while a root-level `data/market/` and `data/gex/` also exist and some routes resolve paths via `process.cwd()` in ways that assume Next was started from a specific directory. If a change touches file read/write paths, check the actual `path.join`/`path.resolve` calls in the specific route rather than assuming a single canonical data directory — the routes are not all consistent with each other yet.
 
