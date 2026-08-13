@@ -14,7 +14,6 @@ import {
   Legend
 } from 'chart.js';
 import 'chartjs-adapter-date-fns';
-import SyntheticDataBadge from '@/components/SyntheticDataBadge';
 
 // Base registration (safe for SSR)
 ChartJS.register(
@@ -25,7 +24,10 @@ ChartJS.register(
 interface GexPoint {
   time: string;
   strike: number;
+  /** Pesato sul volume scambiato oggi: misura di flusso. */
   gex: number;
+  /** Pesato sull'open interest: misura di posizionamento, il GEX canonico. */
+  gexOi: number;
 }
 
 interface SpxHistoryPoint {
@@ -56,10 +58,16 @@ export default function GexPage() {
   const [spxHistory, setSpxHistory] = useState<SpxHistoryPoint[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'lines' | 'bars'>('lines');
+  // Su cosa pesare il gamma: i contratti scambiati oggi (flusso) o le
+  // posizioni aperte (posizionamento, il GEX canonico). Ogni punto porta
+  // gia' entrambi i valori, quindi il cambio e' istantaneo.
+  const [gexBasis, setGexBasis] = useState<'volume' | 'oi'>('volume');
   const [timeWindow, setTimeWindow] = useState<number | 'all'>(5);
   const [isZoomed, setIsZoomed] = useState(false);
   const [pluginsReady, setPluginsReady] = useState(false);
   const [nowClock, setNowClock] = useState<Date>(() => new Date());
+  // Ora di Roma dell'ultimo snapshot ricevuto, da rimandare come `since`.
+  const lastGexTime = useRef<string | null>(null);
   const [refLines, setRefLines] = useState<Record<string, string>>({});
   const [refLineVisibility, setRefLineVisibility] = useState<Record<string, boolean>>({});
 
@@ -106,9 +114,23 @@ export default function GexPage() {
   useEffect(() => {
     const fetchGexData = async () => {
       try {
-        const res = await fetch('/api/gex', { cache: 'no-store' });
-        if (!res.ok) throw new Error('Failed to load GEX data');
-        setGexData(await res.json());
+        // Ogni snapshot vale ~37 punti: senza `since` si riscaricherebbe
+        // l'intera giornata a ogni giro.
+        const since = lastGexTime.current;
+        const res = await fetch(since ? `/api/gex?since=${encodeURIComponent(since)}` : '/api/gex', { cache: 'no-store' });
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error || 'Failed to load GEX data');
+        }
+        const json = await res.json();
+        if (json.lastTime) lastGexTime.current = json.lastTime;
+        const incoming: GexPoint[] = json.points ?? [];
+        if (since) {
+          if (incoming.length > 0) setGexData((prev) => [...prev, ...incoming]);
+        } else {
+          setGexData(incoming);
+        }
+        setError(null);
       } catch (e: any) {
         setError(e.message || 'Error');
       }
@@ -140,7 +162,7 @@ export default function GexPage() {
     };
     fetchGexData();
     fetchSpxData();
-    const interval = setInterval(() => { fetchGexData(); fetchSpxData(); }, 10000);
+    const interval = setInterval(() => { fetchGexData(); fetchSpxData(); }, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -159,10 +181,20 @@ export default function GexPage() {
   }, [filteredGexData, spxHistory]);
 
   const gexProfile = useMemo(() => {
-    const profile: Record<number, number> = {};
-    filteredGexData.forEach((p) => { profile[p.strike] = (profile[p.strike] || 0) + p.gex; });
-    return Object.entries(profile).map(([strike, gex]) => ({ strike: parseFloat(strike), gex }));
-  }, [filteredGexData]);
+    // Il volume delle opzioni e' cumulato dall'apertura, quindi ogni snapshot
+    // porta gia' il totale della giornata: il profilo e' l'ULTIMO valore per
+    // strike, non la somma nel tempo. Sommare (come si faceva con i dati
+    // sintetici, dove ogni punto era un'estrazione indipendente) moltiplicherebbe
+    // il GEX per il numero di snapshot.
+    const latest: Record<number, { minute: number; gex: number }> = {};
+    filteredGexData.forEach((p) => {
+      const minute = timeToMinutes(p.time);
+      const prev = latest[p.strike];
+      const value = gexBasis === 'oi' ? p.gexOi : p.gex;
+      if (!prev || minute >= prev.minute) latest[p.strike] = { minute, gex: value };
+    });
+    return Object.entries(latest).map(([strike, v]) => ({ strike: parseFloat(strike), gex: v.gex }));
+  }, [filteredGexData, gexBasis]);
 
   const currentBasis = useMemo(() => {
     for (let i = spxHistory.length - 1; i >= 0; i--) {
@@ -569,7 +601,6 @@ export default function GexPage() {
 
   return (
     <div className="w-full h-full bg-[#0c0d10] p-2 flex flex-col justify-between">
-      <SyntheticDataBadge />
       {error && (
         <div className="text-red-400 bg-red-950/30 border border-red-900/50 p-2 rounded text-xs mb-2">⚠️ {error}</div>
       )}
@@ -588,6 +619,22 @@ export default function GexPage() {
               className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${viewMode === 'bars' ? 'bg-slate-800 text-teal-400 shadow-md border border-slate-700/60' : 'text-slate-400 hover:text-slate-200'}`}
             >
               Profile Bars
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5 bg-slate-900/60 p-0.5 rounded-lg border border-slate-800">
+            <button
+              onClick={() => setGexBasis('volume')}
+              title="Gamma pesato sui contratti scambiati oggi: misura di flusso"
+              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${gexBasis === 'volume' ? 'bg-slate-800 text-teal-400 shadow-md border border-slate-700/60' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              Volume
+            </button>
+            <button
+              onClick={() => setGexBasis('oi')}
+              title="Gamma pesato sulle posizioni aperte: il GEX canonico. L'open interest e' fermo alla chiusura del giorno prima"
+              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${gexBasis === 'oi' ? 'bg-slate-800 text-teal-400 shadow-md border border-slate-700/60' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              Open Interest
             </button>
             {isZoomed && (
               <button

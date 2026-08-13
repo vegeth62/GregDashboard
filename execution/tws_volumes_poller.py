@@ -98,6 +98,7 @@ def push_snapshot_to_supabase(date_key, snapshot):
             "date": date_key,
             "time": snapshot["time"],
             "spx_price": snapshot["spxPrice"],
+            "und_price": snapshot.get("undPrice"),
             "is_opening": snapshot["isOpening"],
             "volumes": snapshot["volumes"],
         }, on_conflict="date,time", returning="minimal").execute()
@@ -226,7 +227,11 @@ def main():
     for c in qualified:
         # Request data without volume limits if possible, we just need generic ticks (100) or short volume
         # Option Volume is usually included by default in reqMktData
-        ticker = ib.reqMktData(c, '100', False, False)
+        # 100 = Option Volume, 101 = Option Open Interest, 106 = Option
+        # Implied Volatility (porta con se' i modelGreeks, e quindi il gamma).
+        # Tutto sulle stesse linee di market data gia' impegnate: nessun
+        # abbonamento in piu'.
+        ticker = ib.reqMktData(c, '100,101,106', False, False)
         option_tickers.append({"strike": c.strike, "right": c.right, "ticker": ticker})
 
     print("Subscribed. Starting poller loop...")
@@ -270,35 +275,62 @@ def main():
                     print(f"Captured SPX Opening Price at {time_str}: {current_spx}")
                 
                 # Aggregate volumes by strike
-                volume_by_strike = {} # strike -> {calls, puts}
-                
+                volume_by_strike = {} # strike -> {calls, puts, gamma}
+
                 # Initialize
                 for s in strikes:
-                    volume_by_strike[s] = {"calls": 0, "puts": 0}
-                
+                    volume_by_strike[s] = {"calls": 0, "puts": 0, "gamma": None,
+                                           "callsOi": 0, "putsOi": 0}
+
                 valid_data_points = 0
+                und_price = None
                 for item in option_tickers:
                     ticker = item["ticker"]
                     strike = item["strike"]
                     right = item["right"] # 'C' or 'P'
-                    
+
                     vol = ticker.volume if ticker.volume and ticker.volume == ticker.volume else 0
+                    # L'open interest sta su due campi distinti: il contratto
+                    # call popola callOpenInterest, la put putOpenInterest.
+                    raw_oi = ticker.callOpenInterest if right == 'C' else ticker.putOpenInterest
+                    oi = int(raw_oi) if raw_oi and raw_oi == raw_oi else 0
                     if right == 'C':
                         volume_by_strike[strike]["calls"] += vol
+                        volume_by_strike[strike]["callsOi"] += oi
                     else:
                         volume_by_strike[strike]["puts"] += vol
-                    
+                        volume_by_strike[strike]["putsOi"] += oi
+
                     if vol > 0:
                         valid_data_points += 1
 
-                print(f"[{time_str}] Aggregated volumes (C/P separate) for {valid_data_points} active contracts.")
-                
-                # We save a snapshot: time -> array of volumes [strike, calls, puts]
+                    # Il gamma serve al calcolo del GEX reale. Call e put dello
+                    # stesso strike lo condividono (parita' put-call), quindi
+                    # si prende il primo dei due che arriva valorizzato.
+                    greeks = ticker.modelGreeks
+                    if greeks:
+                        if volume_by_strike[strike]["gamma"] is None and greeks.gamma is not None and greeks.gamma == greeks.gamma:
+                            volume_by_strike[strike]["gamma"] = round(float(greeks.gamma), 8)
+                        if und_price is None and greeks.undPrice and greeks.undPrice == greeks.undPrice:
+                            und_price = round(float(greeks.undPrice), 2)
+
+                con_gamma = sum(1 for v in volume_by_strike.values() if v["gamma"] is not None)
+                print(f"[{time_str}] Aggregated volumes (C/P separate) for {valid_data_points} active contracts, "
+                      f"gamma su {con_gamma}/{len(volume_by_strike)} strike.")
+
+                # We save a snapshot: time -> array of volumes [strike, calls, puts, gamma]
                 snapshot = {
                     "time": time_str,
                     "spxPrice": current_spx,
+                    # Sottostante secondo IBKR: prima dell'apertura del cash
+                    # l'indice SPX non e' calcolato, ma questo lo e' (deriva
+                    # dai futures) ed e' il riferimento su cui e' stato
+                    # valutato il gamma.
+                    "undPrice": und_price,
                     "isOpening": is_opening_snapshot,
-                    "volumes": [{"strike": k, "calls": v["calls"], "puts": v["puts"]} for k, v in volume_by_strike.items()]
+                    "volumes": [{"strike": k, "calls": v["calls"], "puts": v["puts"], "gamma": v["gamma"],
+                                 "callsOi": v["callsOi"], "putsOi": v["putsOi"]}
+                                for k, v in volume_by_strike.items()]
                 }
                 
                 append_to_session_file(today_key, snapshot)
