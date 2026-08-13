@@ -18,7 +18,12 @@ from supabase import create_client, Client
 load_dotenv()
 
 # Configuration
-POLL_INTERVAL = 5  # seconds
+# Un punto ogni 15 secondi invece che ogni 5: per un grafico intraday di VIX
+# ed ES la risoluzione e' identica a vedersi, ma le righe scritte in una
+# giornata passano da ~16.500 a ~5.500. E' la voce di banda piu' pesante del
+# progetto, perche' /api/market?history=true rilegge tutta la giornata a ogni
+# caricamento della pagina.
+POLL_INTERVAL = 15  # seconds
 START_HOUR = 0
 END_HOUR = 23
 
@@ -66,6 +71,35 @@ def append_to_session_file(date_key, point):
     except Exception as e:
         print(f"Error writing to file {file_path}: {e}")
 
+def _passo_strike(strikes, atm, default=5.0):
+    """Distanza fra strike adiacenti attorno all'ATM.
+
+    Serve a sapere quanto lo spot puo' allontanarsi prima che lo strike
+    scelto smetta di essere quello ATM.
+    """
+    vicini = sorted(strikes, key=lambda s: abs(s - atm))[:6]
+    passi = sorted({round(abs(a - b), 4) for a in vicini for b in vicini if a != b})
+    return passi[0] if passi else default
+
+
+def _serve_rinnovo(ticker, strike, passo, spot, ultimo_agg, adesso):
+    """Se lo strike sottoscritto non e' piu' quello ATM, va rifatto.
+
+    Il rinnovo a tempo fisso ogni 15 minuti non bastava: nei minuti dopo
+    l'apertura l'indice si sposta di piu' di tre intervalli di strike, e lo
+    straddle finisce per essere misurato su un contratto dentro il denaro,
+    gonfiato dal valore intrinseco. Il limite dei 30 secondi evita di
+    riabbonarsi in continuazione quando lo spot oscilla attorno al confine.
+    """
+    if ticker is None:
+        return True
+    if adesso - ultimo_agg > 900:
+        return True
+    if strike is None or passo is None:
+        return False
+    return abs(spot - strike) > passo / 2 and adesso - ultimo_agg > 30
+
+
 def setup_spx_atm_options(ib, spx_contract, spx_price):
     """Sottoscrive la call e la put ATM sulla chain SPX 0DTE.
 
@@ -78,7 +112,7 @@ def setup_spx_atm_options(ib, spx_contract, spx_price):
     una scadenza a sei giorni: uno straddle circa 2,4 volte piu' largo del
     dovuto, e quindi livelli R sbagliati in modo silenzioso.
 
-    Ritorna (ticker_call, ticker_put, strike, expiry) oppure None.
+    Ritorna (ticker_call, ticker_put, strike, passo_strike) oppure None.
     """
     try:
         chains = ib.reqSecDefOptParams(spx_contract.symbol, '', spx_contract.secType, spx_contract.conId)
@@ -112,7 +146,7 @@ def setup_spx_atm_options(ib, spx_contract, spx_price):
         print(f"SPX ATM 0DTE aggiornato: strike {atm}, scadenza {expiry}, classe {chain.tradingClass}")
         return (ib.reqMktData(call, '106', False, False),
                 ib.reqMktData(put, '106', False, False),
-                atm, expiry)
+                atm, _passo_strike(chain.strikes, atm))
     except Exception as e:
         print(f"Errore nel setup delle opzioni SPX ATM: {e}", file=sys.stderr)
         return None
@@ -129,7 +163,7 @@ def setup_es_atm_options(ib, es_contract, es_price):
     E3A il lunedi', 21 in tutto -- quindi non va mai scritta a mano: si cerca
     a runtime quale chain contiene la scadenza di oggi.
 
-    Ritorna (ticker_call, ticker_put, strike, trading_class) oppure None.
+    Ritorna (ticker_call, ticker_put, strike, passo_strike) oppure None.
     """
     try:
         front = Future(conId=es_contract.conId, exchange='CME')
@@ -163,7 +197,7 @@ def setup_es_atm_options(ib, es_contract, es_price):
         print(f"ES ATM aggiornato: strike {atm}, scadenza {expiry}, classe {chain.tradingClass}")
         return (ib.reqMktData(call, '', False, False),
                 ib.reqMktData(put, '', False, False),
-                atm, chain.tradingClass)
+                atm, _passo_strike(chain.strikes, atm))
     except Exception as e:
         print(f"Errore nel setup delle opzioni ES ATM: {e}", file=sys.stderr)
         return None
@@ -192,7 +226,7 @@ def push_to_supabase(point):
         # Tutti i campi calcolati finivano nel cestino: si spingevano solo vix,
         # esf, time e date, quindi volTide, i coni e le quote ATM esistevano
         # solo nel file locale e in cloud non arrivavano.
-        for k in ("vix", "esf", "spx", "volTide", "coneUp", "coneDown"):
+        for k in ("vix", "esf", "spx", "volTide", "coneUp", "coneDown", "vwap"):
             if point.get(k) is not None:
                 data[k] = point[k]
         for src, col in (("callBid", "call_bid"), ("callAsk", "call_ask"),
@@ -251,7 +285,9 @@ def main():
     # ES continuous futures
     esf_contract = ContFuture('ES', 'CME')
     ib.qualifyContracts(esf_contract)
-    esf_ticker = ib.reqMktData(esf_contract, '', False, False)
+    # 233 = RTVolume, il tick che porta con se' il VWAP di giornata. Sul VIX
+    # non si richiede: e' un indice, non ha volume, e restituirebbe NaN.
+    esf_ticker = ib.reqMktData(esf_contract, '233', False, False)
 
     # SPX Index for Options logic (VolTide)
     spx_contract = Index('SPX', 'CBOE')
@@ -269,12 +305,14 @@ def main():
     spx_call_ticker = None
     spx_put_ticker = None
     spx_atm_strike = None
+    spx_strike_step = None
     last_spx_atm_update = 0
 
     # Straddle ATM sulla chain ES, per il calcolo del range della mattina
     es_call_ticker = None
     es_put_ticker = None
     es_atm_strike = None
+    es_strike_step = None
     last_es_update = 0
 
     ib.sleep(3) # Wait for initial data
@@ -367,7 +405,8 @@ def main():
                         print(f"Active Tickers: {len(option_tickers)} (Qualified: {[c.strike for c in qualified]})")
 
             # 1-bis. Straddle ATM 0DTE su SPX, per il range delle 15:35.
-            if spx == spx and spx > 0 and (timestamp - last_spx_atm_update > 900 or spx_call_ticker is None):
+            if spx == spx and spx > 0 and _serve_rinnovo(
+                    spx_call_ticker, spx_atm_strike, spx_strike_step, spx, last_spx_atm_update, timestamp):
                 setup = setup_spx_atm_options(ib, spx_contract, spx)
                 if setup:
                     if spx_call_ticker is not None:
@@ -376,13 +415,14 @@ def main():
                                 ib.cancelMktData(old.contract)
                             except Exception:
                                 pass
-                    spx_call_ticker, spx_put_ticker, spx_atm_strike, _ = setup
+                    spx_call_ticker, spx_put_ticker, spx_atm_strike, spx_strike_step = setup
                 last_spx_atm_update = timestamp
 
             # 1-ter. Straddle ATM su ES. Non dipende da SPX, che resta NaN
             # finche' il cash americano non apre: e' per questo che la mattina
             # il range si calcola qui e non sulla chain SPX.
-            if esf == esf and esf > 0 and (timestamp - last_es_update > 900 or es_call_ticker is None):
+            if esf == esf and esf > 0 and _serve_rinnovo(
+                    es_call_ticker, es_atm_strike, es_strike_step, esf, last_es_update, timestamp):
                 setup = setup_es_atm_options(ib, esf_contract, esf)
                 if setup:
                     if es_call_ticker is not None:
@@ -391,7 +431,7 @@ def main():
                                 ib.cancelMktData(old.contract)
                             except Exception:
                                 pass
-                    es_call_ticker, es_put_ticker, es_atm_strike, _ = setup
+                    es_call_ticker, es_put_ticker, es_atm_strike, es_strike_step = setup
                 last_es_update = timestamp
 
             # 2. Calculate VolTide Score & ATM Option Quotes
@@ -429,6 +469,9 @@ def main():
                 spx_rounded = round(float(spx), 2) if (spx and spx == spx and spx > 0) else None
                 time_str = now.strftime('%H:%M:%S')
                 
+                esf_vwap = esf_ticker.vwap
+                esf_vwap = round(float(esf_vwap), 2) if esf_vwap and esf_vwap == esf_vwap and esf_vwap > 0 else None
+
                 point = {
                     "time": time_str, 
                     "vix": vix_rounded, 
@@ -448,6 +491,7 @@ def main():
                     "esAtmStrike": es_atm_strike,
                     "spxAtmStrike": spx_atm_strike,
                     "spxRef": spx_ref,
+                    "vwap": esf_vwap,
                 }
                 
                 # Save locally

@@ -152,6 +152,43 @@ const crosshairPlugin = {
     }
 };
 
+/**
+ * Trascina un intervallo bloccato dallo zoom finche' i dati non rientrano.
+ *
+ * Lo zoom scelto resta quello scelto: si sposta l'intervallo, non lo si
+ * ridimensiona. Serve perche' lo zoom verticale fissa min e max dell'asse,
+ * e da quel momento la linea puo' uscire dalla finestra mentre il prezzo
+ * si muove -- senza piu' rientrare da sola.
+ */
+function ancoraAiDati(range: [number, number], valori: number[]): [number, number] {
+    if (valori.length === 0) return range;
+    const span = range[1] - range[0];
+    if (!(span > 0)) return range;
+
+    const dMin = Math.min(...valori);
+    const dMax = Math.max(...valori);
+    const margine = span * 0.08;
+
+    // Zoom piu' stretto dell'escursione dei dati: non si puo' mostrare
+    // tutto, quindi si insegue l'ultimo valore tenendolo al centro.
+    if (dMax - dMin + 2 * margine >= span) {
+        const ultimo = valori[valori.length - 1];
+        return [ultimo - span / 2, ultimo + span / 2];
+    }
+
+    let [min, max] = range;
+    if (dMax > max - margine) {
+        const scarto = dMax - (max - margine);
+        min += scarto; max += scarto;
+    }
+    if (dMin < min + margine) {
+        const scarto = (min + margine) - dMin;
+        min -= scarto; max -= scarto;
+    }
+    return [min, max];
+}
+
+
 interface DataPoint {
     time: string;
     vix: number | null;
@@ -159,6 +196,8 @@ interface DataPoint {
     spx?: number | null;
     coneUp?: number | null;
     coneDown?: number | null;
+    /** VWAP di giornata di ES, dal tick RTVolume di IBKR. */
+    vwap?: number | null;
 }
 
 interface ReferenceLines {
@@ -270,8 +309,20 @@ export default function MarketPage() {
 
     // Range Calculator state
     const emptyCalcInput: RangeCalcInput = { spx: '', es: '', callBid: '', callAsk: '', putBid: '', putAsk: '' };
+
+    /** Riempie solo i campi vuoti: quello che hai inserito a mano resta. */
+    const riempiVuoti = (prev: RangeCalcInput, proposta: RangeCalcInput): RangeCalcInput => {
+        const merged = { ...prev };
+        let cambiato = false;
+        (Object.keys(proposta) as (keyof RangeCalcInput)[]).forEach((k) => {
+            if (!merged[k] && proposta[k]) { merged[k] = proposta[k]; cambiato = true; }
+        });
+        return cambiato ? merged : prev;
+    };
     const [showRangeCalc, setShowRangeCalc] = useState(false);
     const [rangeCalcTab, setRangeCalcTab] = useState<'morning' | 'ob'>('morning');
+    // Ultimo orario di riga gia' inserito nel grafico, per non duplicare.
+    const lastSourceTime = useRef<string | null>(null);
     const [rangeCalcMorning, setRangeCalcMorning] = useState<RangeCalcInput>(emptyCalcInput);
     const [rangeCalcOb, setRangeCalcOb] = useState<RangeCalcInput>(emptyCalcInput);
 
@@ -279,6 +330,8 @@ export default function MarketPage() {
     const sessionWatchRef = useRef<NodeJS.Timeout | null>(null);
     const chartRef = useRef<any>(null);
     const manualZoomRef = useRef(false);
+    // L'utente ha spostato la vista a mano trascinando: si resta dove ha messo.
+    const panLibRef = useRef(false);
     const manualLimitsRef = useRef<{
         x: [any, any] | null;
         yLeft: [number, number] | null;
@@ -454,6 +507,7 @@ export default function MarketPage() {
 
         chart.data.datasets[0].data = dataPoints.map((d) => d.esf);
         chart.data.datasets[1].data = dataPoints.map((d) => d.vix);
+        chart.data.datasets[4].data = dataPoints.map((d) => d.vwap ?? null);
         
         // Ported from logica.zip: Add Cone datasets
         if (chart.data.datasets.length > 3) {
@@ -511,7 +565,7 @@ export default function MarketPage() {
         const newDataLen = dataPoints.length;
 
         // Auto-scroll logic: If we were at the end, shift the window forward
-        if (isAtEnd && (isZoomedRef.current || manualZoomRef.current) && manualLimitsRef.current?.x) {
+        if (!panLibRef.current && isAtEnd && (isZoomedRef.current || manualZoomRef.current) && manualLimitsRef.current?.x) {
             const currentRange = manualLimitsRef.current.x[1] - manualLimitsRef.current.x[0];
             const newMax = newDataLen - 1;
             const newMin = Math.max(0, newMax - currentRange);
@@ -538,61 +592,82 @@ export default function MarketPage() {
 
         // Handle Y Scales (Auto-scaling vs Lock)
         if (visiblePoints.length > 0) {
-            // 1. Calculate ES=F (y-right) range if NOT locked
-            if (!yRightLocked) {
-                const esfValues = visiblePoints.map(d => d.esf).filter(v => v !== null) as number[];
-                if (esfValues.length > 0) {
-                    const dataMin = Math.min(...esfValues);
-                    const dataMax = Math.max(...esfValues);
-                    
-                    // Factor in reference lines ONLY if they are globally relevant or visible
-                    const visibleRefValues: number[] = [];
-                    Object.keys(refLines).forEach(k => {
-                        const key = k as keyof ReferenceLines;
-                        const val = parseFloat(refLines[key]);
-                        if (!isNaN(val) && refLineVisibility[key as keyof RefLineVisibility]) {
-                            // Only include ref lines in auto-scale if they are somewhat near the current data
-                            // to avoid compressing the chart too much.
-                            if (val >= dataMin - 100 && val <= dataMax + 100) {
-                                visibleRefValues.push(val);
-                            }
-                        }
-                    });
+            // 1. Scale proporzionali: stessa distanza verticale = stessa
+            //    variazione percentuale, su entrambi gli assi.
+            //
+            //    ES sta attorno a 7800 e il VIX attorno a 14,7: qualunque
+            //    scala calcolata in valore assoluto rende le due linee
+            //    incomparabili. Con l'autoscala indipendente ciascuna riempiva
+            //    l'altezza disponibile, e un VIX fermo sembrava agitato quanto
+            //    un ES in tendenza. Qui si sceglie UNA semi-ampiezza relativa
+            //    `p` valida per entrambi: l'asse di ES diventa
+            //    [centroEs*(1-p), centroEs*(1+p)] e quello del VIX
+            //    [centroVix*(1-p), centroVix*(1+p)]. A quel punto un
+            //    movimento dell'1% occupa lo stesso spazio sui due assi, e il
+            //    rapporto visivo fra le linee e' quello vero.
+            const esfValues = visiblePoints.map(d => d.esf).filter((v): v is number => v !== null);
+            const vixValuesAuto = visiblePoints.map(d => d.vix).filter((v): v is number => v !== null);
+            const semiRelativa = (v: number[]) => {
+                if (v.length === 0) return null;
+                const lo = Math.min(...v), hi = Math.max(...v), c = (lo + hi) / 2;
+                return c > 0 ? { centro: c, rel: (hi - lo) / 2 / c } : null;
+            };
+            const es = semiRelativa(esfValues);
+            const vix = semiRelativa(vixValuesAuto);
 
-                    let finalMin = dataMin;
-                    let finalMax = dataMax;
+            // Soglia minima: con una linea perfettamente piatta `rel` e' zero e
+            // l'asse degenererebbe in un punto.
+            const MIN_REL = 0.0004;
+            let p = Math.max(es?.rel ?? 0, vix?.rel ?? 0, MIN_REL) * 1.18;
 
-                    if (visibleRefValues.length > 0) {
-                        finalMin = Math.min(finalMin, Math.min(...visibleRefValues));
-                        finalMax = Math.max(finalMax, Math.max(...visibleRefValues));
-                    }
-
-                    const padding = (finalMax - finalMin) * 0.1 || 10;
-                    chart.options.scales['y-right'].min = finalMin - padding;
-                    chart.options.scales['y-right'].max = finalMax + padding;
-                }
-            } else if (manualLimitsRef.current?.yRight) {
-                chart.options.scales['y-right'].min = manualLimitsRef.current.yRight[0];
-                chart.options.scales['y-right'].max = manualLimitsRef.current.yRight[1];
+            // Le linee di riferimento allargano la scala solo se non la
+            // stravolgono: R3 puo' stare all'1,8% dallo spot, quasi dieci volte
+            // l'escursione di una giornata tranquilla, e includerla a forza
+            // schiacciava ES in una banda sottile. Oltre il doppio della
+            // finestra si lascia fuori: per vederla basta allargare lo zoom.
+            if (es) {
+                const distanzeRef = Object.entries(refLines)
+                    .filter(([k]) => (refLineVisibility as unknown as Record<string, boolean | undefined>)[k] !== false)
+                    .map(([, v]) => parseFloat(v))
+                    .filter((v) => !isNaN(v))
+                    .map((v) => Math.abs(v - es.centro) / es.centro);
+                const vicine = distanzeRef.filter((d) => d <= p * 2);
+                if (vicine.length > 0) p = Math.max(p, Math.max(...vicine) * 1.08);
             }
 
-            // 2. Calculate VIX (y-left) range
-            // We ALWAYS auto-scale VIX based on visible points UNLESS the user 
-            // explicitly grabbed the left axis (manualYLeftZoomingRef). 
-            // This ensures ES manual changes don't "lose" the VIX line.
-            if (!yLeftLocked || !manualYLeftZoomingRef.current) {
-                const vixValues = visiblePoints.map(d => d.vix).filter(v => v !== null) as number[];
-                if (vixValues.length > 0) {
-                    const vixMin = Math.min(...vixValues);
-                    const vixMax = Math.max(...vixValues);
-                    const padding = (vixMax - vixMin) * 0.1 || 0.5;
-                    
-                    chart.options.scales['y-left'].min = vixMin - padding;
-                    chart.options.scales['y-left'].max = vixMax + padding;
-                }
-            } else if (manualLimitsRef.current?.yLeft) {
-                chart.options.scales['y-left'].min = manualLimitsRef.current.yLeft[0];
-                chart.options.scales['y-left'].max = manualLimitsRef.current.yLeft[1];
+            if (!yRightLocked && es) {
+                chart.options.scales['y-right'].min = es.centro * (1 - p);
+                chart.options.scales['y-right'].max = es.centro * (1 + p);
+            }
+            if (!yLeftLocked && vix) {
+                chart.options.scales['y-left'].min = vix.centro * (1 - p);
+                chart.options.scales['y-left'].max = vix.centro * (1 + p);
+            }
+
+            if (yRightLocked) {
+                // Asse bloccato dallo zoom: si conserva l'ampiezza scelta ma si
+                // sposta l'intervallo se ES sta uscendo dalla finestra.
+                const bloccato: [number, number] = manualLimitsRef.current?.yRight
+                    ?? [chart.scales['y-right'].min, chart.scales['y-right'].max];
+                const esValues = visiblePoints.map(d => d.esf).filter((v): v is number => v !== null);
+                // Se hai posizionato la vista trascinando, resta dove l'hai
+                // messa: l'ancoraggio serve solo a rimediare allo zoom.
+                const [rMin, rMax] = panLibRef.current ? bloccato : ancoraAiDati(bloccato, esValues);
+                chart.options.scales['y-right'].min = rMin;
+                chart.options.scales['y-right'].max = rMax;
+                if (manualLimitsRef.current) manualLimitsRef.current.yRight = [rMin, rMax];
+            }
+
+            // 2. Asse del VIX quando e' bloccato dallo zoom (quello
+            //    automatico e' gia' stato calcolato sopra, in proporzione).
+            if (yLeftLocked) {
+                const bloccato: [number, number] = manualLimitsRef.current?.yLeft
+                    ?? [chart.scales['y-left'].min, chart.scales['y-left'].max];
+                const vixValues = visiblePoints.map(d => d.vix).filter((v): v is number => v !== null);
+                const [rMin, rMax] = panLibRef.current ? bloccato : ancoraAiDati(bloccato, vixValues);
+                chart.options.scales['y-left'].min = rMin;
+                chart.options.scales['y-left'].max = rMax;
+                if (manualLimitsRef.current) manualLimitsRef.current.yLeft = [rMin, rMax];
             }
         }
 
@@ -713,6 +788,23 @@ export default function MarketPage() {
         } as any));
     }, [morningResults, obResults]);
 
+    // Applicazione automatica al grafico appena i livelli sono calcolabili.
+    // Una volta sola per sessione e per caricamento di pagina, e solo se le
+    // linee non ci sono gia': se le hai tolte a mano non te le rimetto.
+    const autoApplicati = useRef<{ morning: boolean; ob: boolean }>({ morning: false, ob: false });
+
+    useEffect(() => {
+        if (!morningResults || autoApplicati.current.morning) return;
+        autoApplicati.current.morning = true;
+        if (!refLines.r1Up) applyToChart('morning');
+    }, [morningResults, refLines.r1Up, applyToChart]);
+
+    useEffect(() => {
+        if (!obResults || autoApplicati.current.ob) return;
+        autoApplicati.current.ob = true;
+        if (!refLines.r1UpOb) applyToChart('ob');
+    }, [obResults, refLines.r1UpOb, applyToChart]);
+
     const autoFillLivePrices = useCallback((session: 'morning' | 'ob') => {
         const latestPoint = dataPoints.length > 0 ? dataPoints[dataPoints.length - 1] : null;
         const esVal = latestPoint?.esf ?? (dataPoints.length > 0 ? dataPoints[dataPoints.length - 1].esf : null);
@@ -775,18 +867,18 @@ export default function MarketPage() {
                     // Straddle dalla chain ES: alle 10:35 CET sono le 04:35 a
                     // New York e le SPX quotano in Global Trading Hours con
                     // spread larghi, mentre le ES 0DTE sono piene su CME.
-                    setRangeCalcMorning(prev => prev.es ? prev : {
-                        ...prev, es: esfStr, spx: spxStr,
+                    setRangeCalcMorning(prev => riempiVuoti(prev, {
+                        es: esfStr, spx: spxStr,
                         callBid: q(data.esCallBid), callAsk: q(data.esCallAsk),
                         putBid: q(data.esPutBid), putAsk: q(data.esPutAsk),
-                    });
+                    }));
                 } else if (hours === 15 && minutes === 35) {
                     // A mercato aperto lo straddle torna sulla chain SPX.
-                    setRangeCalcOb(prev => prev.es ? prev : {
-                        ...prev, es: esfStr, spx: spxStr,
+                    setRangeCalcOb(prev => riempiVuoti(prev, {
+                        es: esfStr, spx: spxStr,
                         callBid: q(data.callBid), callAsk: q(data.callAsk),
                         putBid: q(data.putBid), putAsk: q(data.putAsk),
-                    });
+                    }));
                 }
             }
 
@@ -798,11 +890,20 @@ export default function MarketPage() {
                     spx: data.spx,
                     coneUp: data.coneUp,
                     coneDown: data.coneDown,
+                    vwap: data.vwap,
                 };
                 if (prev.length === 0 && data.esf !== null) {
                     setFirstEsfValue(data.esf);
                 }
-                const updated = [...prev, newPoint].slice(-2000); // ~2h45m at 5s
+                // Il poller scrive ogni 15 secondi, qui si interroga ogni 5:
+                // senza questo controllo lo stesso punto verrebbe appeso tre
+                // volte. Si continua a interrogare a 5 secondi perche' costa
+                // poco (~180 byte) e fa comparire il dato nuovo subito.
+                if (data.sourceTime && data.sourceTime === lastSourceTime.current) {
+                    return prev;
+                }
+                if (data.sourceTime) lastSourceTime.current = data.sourceTime;
+                const updated = [...prev, newPoint].slice(-2000); // ~8h20m a 15s
                 persistDataPoints(updated);
                 return updated;
             });
@@ -813,6 +914,69 @@ export default function MarketPage() {
             setStatus('error');
         }
     }, [persistDataPoints]);
+
+    /**
+     * Compila i pannelli Range dallo storico.
+     *
+     * L'auto-compilazione dal vivo scatta solo se la pagina e' aperta esattamente
+     * alle 10:35 o alle 15:35: chi apre la dashboard piu' tardi non la vedeva
+     * mai scattare. Qui si ripesca il primo punto utile a partire da quell'ora,
+     * cosi' il pannello si riempie a qualunque ora si apra la pagina.
+     */
+    const backfillRangeCalc = useCallback((history: Record<string, unknown>[]) => {
+        const num = (v: unknown) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : null);
+
+        const findAt = (target: string, campi: string[]) => {
+            // Tolleranza di 30 minuti: se il poller era fermo all'orario esatto
+            // si prende il primo punto buono successivo, invece di rinunciare.
+            const [th, tm] = target.split(':').map(Number);
+            const limite = th * 60 + tm + 30;
+            for (const p of history) {
+                const t = typeof p.time === 'string' ? p.time : '';
+                if (!t || t < target) continue;
+                const [h, m] = t.split(':').map(Number);
+                if (h * 60 + m > limite) break;
+                if (campi.every((c) => num(p[c]) !== null) && num(p.esf) !== null) return p;
+            }
+            return null;
+        };
+
+        const applica = (
+            punto: Record<string, unknown> | null,
+            chiavi: { call: string; callA: string; put: string; putA: string },
+            setter: typeof setRangeCalcMorning,
+        ) => {
+            if (!punto) return;
+            const spot = num(punto.spx) ?? num(punto.spxRef);
+            const proposta: RangeCalcInput = {
+                es: (num(punto.esf) as number).toFixed(2),
+                spx: (spot ?? (num(punto.esf) as number) - 15).toFixed(2),
+                callBid: (num(punto[chiavi.call]) as number).toFixed(2),
+                callAsk: (num(punto[chiavi.callA]) as number).toFixed(2),
+                putBid: (num(punto[chiavi.put]) as number).toFixed(2),
+                putAsk: (num(punto[chiavi.putA]) as number).toFixed(2),
+            };
+            // Si riempie campo per campo, non tutto-o-niente. La versione
+            // precedente si arrendeva se `es` era gia' valorizzato, e bastava
+            // aver avuto la pagina aperta alle 15:35 con una build vecchia --
+            // che scriveva solo es e spx -- perche' le quote non entrassero
+            // mai piu' e il pannello restasse muto: calcRange vuole tutti e
+            // sei i campi, con cinque su sei non calcola niente.
+            setter((prev) => riempiVuoti(prev, proposta));
+        };
+
+        // La mattina si usa la chain ES, il pomeriggio quella SPX.
+        applica(
+            findAt('10:35:00', ['esCallBid', 'esCallAsk', 'esPutBid', 'esPutAsk']),
+            { call: 'esCallBid', callA: 'esCallAsk', put: 'esPutBid', putA: 'esPutAsk' },
+            setRangeCalcMorning,
+        );
+        applica(
+            findAt('15:35:00', ['callBid', 'callAsk', 'putBid', 'putAsk']),
+            { call: 'callBid', callA: 'callAsk', put: 'putBid', putA: 'putAsk' },
+            setRangeCalcOb,
+        );
+    }, []);
 
     // ---- Main mount logic ----
     useEffect(() => {
@@ -855,6 +1019,7 @@ export default function MarketPage() {
                         setLastUpdate(history[history.length - 1].time);
                         persistDataPoints(history);
                         setStatus(isInTradingHours() ? 'live' : 'paused');
+                        backfillRangeCalc(history as unknown as Record<string, unknown>[]);
                     }
                 }
             } catch { }
@@ -1113,22 +1278,38 @@ export default function MarketPage() {
     // ---- Zoom controls ----
     const handleZoomIn = (axis: 'x' | 'y') => {
         if (chartRef.current) {
-            chartRef.current.zoom(axis === 'x' ? { x: 1.2 } : { y: 1.2 });
+            const chart = chartRef.current;
+            chart.zoom(axis === 'x' ? { x: 1.2 } : { y: 1.2 });
             if (axis === 'y') {
                 manualYLeftZoomingRef.current = true;
                 manualYRightZoomingRef.current = true;
                 manualZoomRef.current = true;
+                // Si registra l'ampiezza appena ottenuta: senza questo il
+                // prossimo aggiornamento riapplicherebbe un intervallo vecchio.
+                manualLimitsRef.current = {
+                    ...(manualLimitsRef.current ?? { x: null, yLeft: null, yRight: null }),
+                    yLeft: [chart.scales['y-left'].min, chart.scales['y-left'].max],
+                    yRight: [chart.scales['y-right'].min, chart.scales['y-right'].max],
+                };
             }
             updateZoomState();
         }
     };
     const handleZoomOut = (axis: 'x' | 'y') => {
         if (chartRef.current) {
-            chartRef.current.zoom(axis === 'x' ? { x: 0.8 } : { y: 0.8 });
+            const chart = chartRef.current;
+            chart.zoom(axis === 'x' ? { x: 0.8 } : { y: 0.8 });
             if (axis === 'y') {
                 manualYLeftZoomingRef.current = true;
                 manualYRightZoomingRef.current = true;
                 manualZoomRef.current = true;
+                // Si registra l'ampiezza appena ottenuta: senza questo il
+                // prossimo aggiornamento riapplicherebbe un intervallo vecchio.
+                manualLimitsRef.current = {
+                    ...(manualLimitsRef.current ?? { x: null, yLeft: null, yRight: null }),
+                    yLeft: [chart.scales['y-left'].min, chart.scales['y-left'].max],
+                    yRight: [chart.scales['y-right'].min, chart.scales['y-right'].max],
+                };
             }
             updateZoomState();
         }
@@ -1139,6 +1320,7 @@ export default function MarketPage() {
             chart.resetZoom();
             isZoomedRef.current = false;
             manualZoomRef.current = false;
+            panLibRef.current = false;
             manualYLeftZoomingRef.current = false;
             manualYRightZoomingRef.current = false;
             manualLimitsRef.current = { x: null, yLeft: null, yRight: null };
@@ -1206,6 +1388,19 @@ export default function MarketPage() {
                 yAxisID: 'y-right',
                 fill: false,
             },
+            {
+                // In coda, per non spostare gli indici dei dataset gia' usati
+                // altrove (0 = ES, 1 = VIX).
+                label: 'VWAP (ES)',
+                data: [] as (number | null)[],
+                borderColor: '#22d3ee',
+                borderWidth: 1.5,
+                borderDash: [6, 3],
+                pointRadius: 0,
+                tension: 0.1,
+                yAxisID: 'y-right',
+                fill: false,
+            },
         ],
     }), []);
 
@@ -1231,11 +1426,22 @@ export default function MarketPage() {
                 },
                 pan: {
                     enabled: true, // Enable native pan plugin for smooth left-drag panning
+                    // Trascinamento libero in tutte le direzioni. Quando lo si
+                    // usa, `panLibRef` congela la vista dove l'hai messa: ne'
+                    // l'auto-scroll ne' l'ancoraggio agli assi la spostano piu'.
                     mode: 'xy' as const,
                     modifierKey: undefined,
-                    onPanComplete: () => {
+                    onPanComplete: ({ chart }: { chart: any }) => {
                         isZoomedRef.current = true;
                         manualZoomRef.current = true;
+                        panLibRef.current = true;
+                        manualYLeftZoomingRef.current = true;
+                        manualYRightZoomingRef.current = true;
+                        manualLimitsRef.current = {
+                            x: [chart.scales.x.min, chart.scales.x.max],
+                            yLeft: [chart.scales['y-left'].min, chart.scales['y-left'].max],
+                            yRight: [chart.scales['y-right'].min, chart.scales['y-right'].max],
+                        };
                         // We set manual locking specifically when the user interacts 
                         // but we will keep the "other" axis adapting if not touched.
                         // For global pans, we usually lock what was moved.
@@ -1267,6 +1473,9 @@ export default function MarketPage() {
                 type: 'linear' as const,
                 position: 'left' as const,
                 display: true,
+                // Un margine sopra e sotto l'escursione dei dati: la linea
+                // resta staccata dai bordi invece di strisciarci contro.
+                grace: '10%',
                 ticks: { color: '#94a3b8', font: { size: 11 }, padding: 8 },
                 grid: { color: 'rgba(51, 65, 85, 0.1)' },
             },
@@ -1279,6 +1488,7 @@ export default function MarketPage() {
                 type: 'linear' as const,
                 position: 'right' as const,
                 display: true,
+                grace: '10%',
                 ticks: {
                     color: '#94a3b8',
                     font: { size: 11 },

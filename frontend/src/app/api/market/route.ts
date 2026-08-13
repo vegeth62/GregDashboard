@@ -59,7 +59,37 @@ export async function GET(request: Request) {
             esAtmStrike: row.esAtmStrike ?? row.es_atm_strike ?? null,
             spxAtmStrike: row.spxAtmStrike ?? row.spx_atm_strike ?? null,
             spxRef: row.spxRef ?? row.spx_ref ?? null,
+            vwap: typeof row.vwap === 'number' ? row.vwap : null,
         });
+
+        /**
+         * Scarica tutte le righe di una giornata, a pagine.
+         *
+         * PostgREST tronca silenziosamente a 1000 righe (`db-max-rows`): senza
+         * paginare, con il poller che scrive ogni 5 secondi si perdeva tutto
+         * quello che veniva dopo le prime ~83 minuti di sessione.
+         */
+        const fetchDayRows = async (dateStr: string, columns: string) => {
+            const PAGE = 1000;
+            const MAX = 30000; // ~24h a 5 secondi, con margine
+            const all: any[] = [];
+            for (let from = 0; from < MAX; from += PAGE) {
+                const { data, error } = await supabase
+                    .from('market_data')
+                    .select(columns)
+                    .eq('date', dateStr)
+                    .order('created_at', { ascending: true })
+                    .range(from, from + PAGE - 1);
+                if (error) {
+                    console.error('Supabase page fetch failed:', error.message);
+                    break;
+                }
+                if (!data || data.length === 0) break;
+                all.push(...data);
+                if (data.length < PAGE) break;
+            }
+            return all;
+        };
 
         const formatHistory = (data: any[]) => {
             return (data || []).map((raw: any) => withCamelQuotes(raw)).map((item: any) => ({
@@ -79,12 +109,7 @@ export async function GET(request: Request) {
             let data = null;
             if (isSupabaseConfigured) {
                 try {
-                    const res = await supabase
-                        .from('market_data')
-                        .select(`time, vix, esf, spx, created_at, volTide, coneUp, coneDown, ${QUOTE_COLUMNS}`)
-                        .eq('date', dateParam)
-                        .order('created_at', { ascending: true });
-                    data = res.data;
+                    data = await fetchDayRows(dateParam, `time, vix, esf, spx, created_at, volTide, coneUp, coneDown, vwap, ${QUOTE_COLUMNS}`);
                 } catch (e) { console.error('Supabase fetch failed:', e); }
             }
             if (!data || data.length === 0) data = getLocalData(dateParam);
@@ -99,12 +124,7 @@ export async function GET(request: Request) {
 
             if (isSupabaseConfigured) {
                 try {
-                    const res = await supabase
-                        .from('market_data')
-                        .select(`time, vix, esf, spx, created_at, volTide, coneUp, coneDown, ${QUOTE_COLUMNS}`)
-                        .eq('date', today)
-                        .order('created_at', { ascending: true });
-                    data = res.data;
+                    data = await fetchDayRows(today, `time, vix, esf, spx, created_at, volTide, coneUp, coneDown, vwap, ${QUOTE_COLUMNS}`);
                 } catch (e) { console.error('Supabase fetch failed:', e); }
             }
             if (!data || data.length === 0) data = getLocalData(today);
@@ -123,12 +143,16 @@ export async function GET(request: Request) {
             let esfPrice = null;
             let spxPrice = null;
             let quotes: Record<string, number | null> = {};
+            // Orario della riga di origine: il poller scrive ogni 15 secondi
+            // mentre la pagina interroga ogni 5, e senza questo appenderebbe
+            // tre volte lo stesso punto.
+            let sourceTime: string | null = null;
 
             if (isSupabaseConfigured) {
                 try {
                     const { data, error } = await supabase
                         .from('market_data')
-                        .select(`vix, esf, spx, created_at, ${QUOTE_COLUMNS}`)
+                        .select(`time, vix, esf, spx, created_at, vwap, ${QUOTE_COLUMNS}`)
                         .eq('date', today)
                         .order('created_at', { ascending: false })
                         .limit(1);
@@ -138,6 +162,7 @@ export async function GET(request: Request) {
                         esfPrice = data[0].esf;
                         spxPrice = data[0].spx ?? null;
                         quotes = withCamelQuotes(data[0]);
+                        sourceTime = (data[0] as { time?: string }).time ?? null;
                     }
                 } catch (e) { console.error('Supabase fetch failed:', e); }
             }
@@ -150,6 +175,7 @@ export async function GET(request: Request) {
                     esfPrice = lastPoint.esf;
                     if (lastPoint.spx !== undefined) spxPrice = lastPoint.spx;
                     quotes = withCamelQuotes(lastPoint);
+                    sourceTime = lastPoint.time ?? null;
                 }
             }
 
@@ -160,6 +186,8 @@ export async function GET(request: Request) {
             const now = new Date();
             return NextResponse.json({
                 timestamp: now.toISOString(),
+                sourceTime,
+                vwap: quotes.vwap ?? null,
                 vix: vixPrice,
                 esf: esfPrice,
                 spx: spxPrice,
