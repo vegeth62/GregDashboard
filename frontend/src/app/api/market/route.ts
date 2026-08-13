@@ -42,8 +42,27 @@ export async function GET(request: Request) {
             return null;
         };
 
+        // Le colonne delle quote sono snake_case su Postgres ma la pagina le
+        // legge in camelCase, come le scrive il poller nel file locale.
+        const QUOTE_COLUMNS = 'call_bid, call_ask, put_bid, put_ask, es_call_bid, es_call_ask, es_put_bid, es_put_ask, es_atm_strike, spx_atm_strike, spx_ref';
+
+        const withCamelQuotes = (row: any) => ({
+            ...row,
+            callBid: row.callBid ?? row.call_bid ?? null,
+            callAsk: row.callAsk ?? row.call_ask ?? null,
+            putBid: row.putBid ?? row.put_bid ?? null,
+            putAsk: row.putAsk ?? row.put_ask ?? null,
+            esCallBid: row.esCallBid ?? row.es_call_bid ?? null,
+            esCallAsk: row.esCallAsk ?? row.es_call_ask ?? null,
+            esPutBid: row.esPutBid ?? row.es_put_bid ?? null,
+            esPutAsk: row.esPutAsk ?? row.es_put_ask ?? null,
+            esAtmStrike: row.esAtmStrike ?? row.es_atm_strike ?? null,
+            spxAtmStrike: row.spxAtmStrike ?? row.spx_atm_strike ?? null,
+            spxRef: row.spxRef ?? row.spx_ref ?? null,
+        });
+
         const formatHistory = (data: any[]) => {
-            return (data || []).map((item: any) => ({
+            return (data || []).map((raw: any) => withCamelQuotes(raw)).map((item: any) => ({
                 ...item,
                 time: item.time || new Date(item.created_at).toLocaleTimeString('it-IT', {
                     timeZone: 'Europe/Rome',
@@ -62,7 +81,7 @@ export async function GET(request: Request) {
                 try {
                     const res = await supabase
                         .from('market_data')
-                        .select('time, vix, esf, spx, created_at')
+                        .select(`time, vix, esf, spx, created_at, volTide, coneUp, coneDown, ${QUOTE_COLUMNS}`)
                         .eq('date', dateParam)
                         .order('created_at', { ascending: true });
                     data = res.data;
@@ -82,7 +101,7 @@ export async function GET(request: Request) {
                 try {
                     const res = await supabase
                         .from('market_data')
-                        .select('time, vix, esf, spx, created_at')
+                        .select(`time, vix, esf, spx, created_at, volTide, coneUp, coneDown, ${QUOTE_COLUMNS}`)
                         .eq('date', today)
                         .order('created_at', { ascending: true });
                     data = res.data;
@@ -103,12 +122,13 @@ export async function GET(request: Request) {
             let vixPrice = null;
             let esfPrice = null;
             let spxPrice = null;
+            let quotes: Record<string, number | null> = {};
 
             if (isSupabaseConfigured) {
                 try {
                     const { data, error } = await supabase
                         .from('market_data')
-                        .select('vix, esf, spx, created_at')
+                        .select(`vix, esf, spx, created_at, ${QUOTE_COLUMNS}`)
                         .eq('date', today)
                         .order('created_at', { ascending: false })
                         .limit(1);
@@ -117,6 +137,7 @@ export async function GET(request: Request) {
                         vixPrice = data[0].vix;
                         esfPrice = data[0].esf;
                         spxPrice = data[0].spx ?? null;
+                        quotes = withCamelQuotes(data[0]);
                     }
                 } catch (e) { console.error('Supabase fetch failed:', e); }
             }
@@ -128,6 +149,7 @@ export async function GET(request: Request) {
                     vixPrice = lastPoint.vix;
                     esfPrice = lastPoint.esf;
                     if (lastPoint.spx !== undefined) spxPrice = lastPoint.spx;
+                    quotes = withCamelQuotes(lastPoint);
                 }
             }
 
@@ -141,6 +163,20 @@ export async function GET(request: Request) {
                 vix: vixPrice,
                 esf: esfPrice,
                 spx: spxPrice,
+                // Quote ATM per la compilazione automatica del Range Calc:
+                // le es* dalla chain ES (range delle 10:35), le altre da SPX
+                // (range delle 15:35).
+                callBid: quotes.callBid ?? null,
+                callAsk: quotes.callAsk ?? null,
+                putBid: quotes.putBid ?? null,
+                putAsk: quotes.putAsk ?? null,
+                esCallBid: quotes.esCallBid ?? null,
+                esCallAsk: quotes.esCallAsk ?? null,
+                esPutBid: quotes.esPutBid ?? null,
+                esPutAsk: quotes.esPutAsk ?? null,
+                esAtmStrike: quotes.esAtmStrike ?? null,
+                spxAtmStrike: quotes.spxAtmStrike ?? null,
+                spxRef: quotes.spxRef ?? null,
             }, { status: 200 });
         }
     } catch (error: any) {

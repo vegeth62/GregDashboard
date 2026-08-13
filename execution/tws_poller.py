@@ -66,6 +66,119 @@ def append_to_session_file(date_key, point):
     except Exception as e:
         print(f"Error writing to file {file_path}: {e}")
 
+def setup_spx_atm_options(ib, spx_contract, spx_price):
+    """Sottoscrive la call e la put ATM sulla chain SPX 0DTE.
+
+    Serve al calcolo del range del pomeriggio (15:35), quando il cash
+    americano e' aperto da cinque minuti.
+
+    Le 0DTE stanno sotto la trading class SPXW, non SPX: quest'ultima ha solo
+    le scadenze mensili (la piu' vicina e' a giorni di distanza). Il codice
+    precedente prendeva `SPX` e poi `expirations[0]`, chiamando `exp_0dte`
+    una scadenza a sei giorni: uno straddle circa 2,4 volte piu' largo del
+    dovuto, e quindi livelli R sbagliati in modo silenzioso.
+
+    Ritorna (ticker_call, ticker_put, strike, expiry) oppure None.
+    """
+    try:
+        chains = ib.reqSecDefOptParams(spx_contract.symbol, '', spx_contract.secType, spx_contract.conId)
+        if not chains:
+            return None
+
+        today = datetime.now().strftime('%Y%m%d')
+        cbo = [c for c in chains if c.exchange == 'CBOE']
+        chain = next((c for c in cbo if today in c.expirations and c.tradingClass == 'SPXW'), None) \
+            or next((c for c in cbo if today in c.expirations), None)
+        expiry = today
+        if chain is None:
+            # Nessuna 0DTE (festivo): prima scadenza utile, sempre da CBOE.
+            options = sorted({(e, c.tradingClass) for c in cbo for e in c.expirations if e >= today})
+            if not options:
+                return None
+            expiry, tc_name = options[0]
+            chain = next(c for c in cbo if c.tradingClass == tc_name)
+
+        if not chain.strikes:
+            return None
+        atm = min(chain.strikes, key=lambda s: abs(s - spx_price))
+
+        call = Option('SPX', expiry, atm, 'C', 'CBOE', multiplier='100', tradingClass=chain.tradingClass)
+        put = Option('SPX', expiry, atm, 'P', 'CBOE', multiplier='100', tradingClass=chain.tradingClass)
+        qualified = ib.qualifyContracts(call, put)
+        if len(qualified) != 2:
+            print(f"SPX ATM: qualificati solo {len(qualified)}/2 contratti su {chain.tradingClass}")
+            return None
+
+        print(f"SPX ATM 0DTE aggiornato: strike {atm}, scadenza {expiry}, classe {chain.tradingClass}")
+        return (ib.reqMktData(call, '106', False, False),
+                ib.reqMktData(put, '106', False, False),
+                atm, expiry)
+    except Exception as e:
+        print(f"Errore nel setup delle opzioni SPX ATM: {e}", file=sys.stderr)
+        return None
+
+
+def setup_es_atm_options(ib, es_contract, es_price):
+    """Sottoscrive la call e la put ATM sulla chain 0DTE delle opzioni ES.
+
+    La mattina presto il range si calcola su ES e non su SPX: alle 10:35 CET
+    sono le 04:35 a New York, le SPX quotano in Global Trading Hours con
+    spread larghi mentre le ES sono piene su CME (spread ~0,3 punti).
+
+    La trading class ruota ogni giorno -- E2D il giovedi', EW2 il venerdi',
+    E3A il lunedi', 21 in tutto -- quindi non va mai scritta a mano: si cerca
+    a runtime quale chain contiene la scadenza di oggi.
+
+    Ritorna (ticker_call, ticker_put, strike, trading_class) oppure None.
+    """
+    try:
+        front = Future(conId=es_contract.conId, exchange='CME')
+        ib.qualifyContracts(front)
+        chains = ib.reqSecDefOptParams('ES', 'CME', 'FUT', front.conId)
+        if not chains:
+            return None
+
+        today = datetime.now().strftime('%Y%m%d')
+        chain = next((c for c in chains if today in c.expirations), None)
+        expiry = today
+        if chain is None:
+            # Nessuna 0DTE (festivo, weekend): si prende la prima utile.
+            future_exps = sorted({(e, c.tradingClass) for c in chains for e in c.expirations if e >= today})
+            if not future_exps:
+                return None
+            expiry, tc_name = future_exps[0]
+            chain = next(c for c in chains if c.tradingClass == tc_name)
+
+        if not chain.strikes:
+            return None
+        atm = min(chain.strikes, key=lambda s: abs(s - es_price))
+
+        call = FuturesOption('ES', expiry, atm, 'C', 'CME', tradingClass=chain.tradingClass)
+        put = FuturesOption('ES', expiry, atm, 'P', 'CME', tradingClass=chain.tradingClass)
+        qualified = ib.qualifyContracts(call, put)
+        if len(qualified) != 2:
+            print(f"ES ATM: qualificati solo {len(qualified)}/2 contratti su {chain.tradingClass}")
+            return None
+
+        print(f"ES ATM aggiornato: strike {atm}, scadenza {expiry}, classe {chain.tradingClass}")
+        return (ib.reqMktData(call, '', False, False),
+                ib.reqMktData(put, '', False, False),
+                atm, chain.tradingClass)
+    except Exception as e:
+        print(f"Errore nel setup delle opzioni ES ATM: {e}", file=sys.stderr)
+        return None
+
+
+def _quote(ticker, side):
+    """bid/ask di un ticker, None se assente o NaN."""
+    if ticker is None:
+        return None
+    v = getattr(ticker, side, None)
+    if v is None or v != v or v <= 0:
+        return None
+    return round(float(v), 2)
+
+
 def push_to_supabase(point):
     if not SUPABASE_URL or not SUPABASE_KEY or SUPABASE_URL == "YOUR_SUPABASE_URL":
         return
@@ -73,14 +186,24 @@ def push_to_supabase(point):
     try:
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         data = {
-            "vix": point["vix"],
-            "esf": point["esf"],
             "time": point["time"],
-            "date": get_today_key()
+            "date": get_today_key(),
         }
-        if "spx" in point and point["spx"] is not None:
-            data["spx"] = point["spx"]
-        supabase.table("market_data").insert(data).execute()
+        # Tutti i campi calcolati finivano nel cestino: si spingevano solo vix,
+        # esf, time e date, quindi volTide, i coni e le quote ATM esistevano
+        # solo nel file locale e in cloud non arrivavano.
+        for k in ("vix", "esf", "spx", "volTide", "coneUp", "coneDown"):
+            if point.get(k) is not None:
+                data[k] = point[k]
+        for src, col in (("callBid", "call_bid"), ("callAsk", "call_ask"),
+                         ("putBid", "put_bid"), ("putAsk", "put_ask"),
+                         ("esCallBid", "es_call_bid"), ("esCallAsk", "es_call_ask"),
+                         ("esPutBid", "es_put_bid"), ("esPutAsk", "es_put_ask"),
+                         ("esAtmStrike", "es_atm_strike"), ("spxAtmStrike", "spx_atm_strike"),
+                         ("spxRef", "spx_ref")):
+            if point.get(src) is not None:
+                data[col] = point[src]
+        supabase.table("market_data").insert(data, returning="minimal").execute()
     except Exception as e:
         print(f"Error pushing to Supabase: {e}", file=sys.stderr)
 
@@ -141,7 +264,19 @@ def main():
     cone_down = None
     last_skew_update = 0
     option_tickers = [] # [atm, put90, call120]
-    
+
+    # Straddle ATM 0DTE su SPX, per il calcolo del range del pomeriggio
+    spx_call_ticker = None
+    spx_put_ticker = None
+    spx_atm_strike = None
+    last_spx_atm_update = 0
+
+    # Straddle ATM sulla chain ES, per il calcolo del range della mattina
+    es_call_ticker = None
+    es_put_ticker = None
+    es_atm_strike = None
+    last_es_update = 0
+
     ib.sleep(3) # Wait for initial data
 
     while True:
@@ -160,7 +295,19 @@ def main():
             vix = vix_ticker.marketPrice()
             esf = esf_ticker.marketPrice()
             spx = spx_ticker.marketPrice()
-            
+
+            # Riferimento SPX per il pannello Range: l'indice non viene
+            # calcolato prima dell'apertura del cash americano, quindi la
+            # mattina `spx` e' NaN. Si ripiega su last e poi su close.
+            # Resta un campo distinto da `spx`: scriverlo nella colonna vera
+            # disegnerebbe sul grafico una linea piatta alla chiusura di ieri
+            # da mezzanotte alle 15:30.
+            spx_ref = None
+            for candidate in (spx, spx_ticker.last, spx_ticker.close):
+                if candidate and candidate == candidate and candidate > 0:
+                    spx_ref = round(float(candidate), 2)
+                    break
+
             # 1. Update Option Selection every 15 minutes (or if none selected)
             if (timestamp - last_skew_update > 900 or not option_tickers) and spx == spx and spx > 0:
                 print(f"[{now.strftime('%H:%M:%S')}] Updating Option Skew targets (SPX at {spx})...")
@@ -196,49 +343,65 @@ def main():
                         call120_strike = min(strikes, key=lambda x: abs(x - target_120))
                         trading_class = chain.tradingClass
 
-                        # 0DTE / nearest expiration for Intraday Range calculation
-                        exp_0dte = expirations[0]
-                        atm_0dte_c = Option('SPX', exp_0dte, atm_strike, 'C', 'CBOE', multiplier='100', tradingClass=trading_class)
-                        atm_0dte_p = Option('SPX', exp_0dte, atm_strike, 'P', 'CBOE', multiplier='100', tradingClass=trading_class)
+                        # Lo straddle ATM 0DTE non si costruisce piu' qui: sta
+                        # su un'altra trading class (SPXW) e ha una sua
+                        # funzione, setup_spx_atm_options.
                         atm_c = Option('SPX', target_exp, atm_strike, 'C', 'CBOE', multiplier='100', tradingClass=trading_class)
                         put90_c = Option('SPX', target_exp, put90_strike, 'P', 'CBOE', multiplier='100', tradingClass=trading_class)
                         call120_c = Option('SPX', target_exp, call120_strike, 'C', 'CBOE', multiplier='100', tradingClass=trading_class)
                         
-                        print(f"Qualifying: Exp0DTE={exp_0dte}, ATM={atm_strike}, ExpVolTide={target_exp}, P90={put90_strike}, C120={call120_strike} ({trading_class})")
-                        qualified = ib.qualifyContracts(atm_0dte_c, atm_0dte_p, atm_c, put90_c, call120_c)
-                        
+                        print(f"Qualifying: ATM={atm_strike}, ExpVolTide={target_exp}, P90={put90_strike}, C120={call120_strike} ({trading_class})")
+                        qualified = ib.qualifyContracts(atm_c, put90_c, call120_c)
+
                         # Cancel old
                         for t in option_tickers:
                             ib.cancelMktData(t.contract)
-                            
+
                         # Request new
                         option_tickers = []
-                        if atm_0dte_c in qualified: option_tickers.append(ib.reqMktData(atm_0dte_c, '106', False, False))
-                        if atm_0dte_p in qualified: option_tickers.append(ib.reqMktData(atm_0dte_p, '106', False, False))
-                        if atm_c in qualified and atm_c not in option_tickers: option_tickers.append(ib.reqMktData(atm_c, '106', False, False))
+                        if atm_c in qualified: option_tickers.append(ib.reqMktData(atm_c, '106', False, False))
                         if put90_c in qualified: option_tickers.append(ib.reqMktData(put90_c, '106', False, False))
                         if call120_c in qualified: option_tickers.append(ib.reqMktData(call120_c, '106', False, False))
                         
                         last_skew_update = timestamp
                         print(f"Active Tickers: {len(option_tickers)} (Qualified: {[c.strike for c in qualified]})")
 
+            # 1-bis. Straddle ATM 0DTE su SPX, per il range delle 15:35.
+            if spx == spx and spx > 0 and (timestamp - last_spx_atm_update > 900 or spx_call_ticker is None):
+                setup = setup_spx_atm_options(ib, spx_contract, spx)
+                if setup:
+                    if spx_call_ticker is not None:
+                        for old in (spx_call_ticker, spx_put_ticker):
+                            try:
+                                ib.cancelMktData(old.contract)
+                            except Exception:
+                                pass
+                    spx_call_ticker, spx_put_ticker, spx_atm_strike, _ = setup
+                last_spx_atm_update = timestamp
+
+            # 1-ter. Straddle ATM su ES. Non dipende da SPX, che resta NaN
+            # finche' il cash americano non apre: e' per questo che la mattina
+            # il range si calcola qui e non sulla chain SPX.
+            if esf == esf and esf > 0 and (timestamp - last_es_update > 900 or es_call_ticker is None):
+                setup = setup_es_atm_options(ib, esf_contract, esf)
+                if setup:
+                    if es_call_ticker is not None:
+                        for old in (es_call_ticker, es_put_ticker):
+                            try:
+                                ib.cancelMktData(old.contract)
+                            except Exception:
+                                pass
+                    es_call_ticker, es_put_ticker, es_atm_strike, _ = setup
+                last_es_update = timestamp
+
             # 2. Calculate VolTide Score & ATM Option Quotes
-            atm_call_bid = None
-            atm_call_ask = None
-            atm_put_bid = None
-            atm_put_ask = None
+            atm_call_bid = _quote(spx_call_ticker, 'bid')
+            atm_call_ask = _quote(spx_call_ticker, 'ask')
+            atm_put_bid = _quote(spx_put_ticker, 'bid')
+            atm_put_ask = _quote(spx_put_ticker, 'ask')
+            c_0dte_t = spx_call_ticker
 
             if len(option_tickers) >= 2:
-                # Find ATM 0DTE Call and Put tickers
-                c_0dte_t = next((t for t in option_tickers if t.contract.right == 'C' and t.contract.strike == atm_strike), None)
-                p_0dte_t = next((t for t in option_tickers if t.contract.right == 'P' and t.contract.strike == atm_strike), None)
-
-                if c_0dte_t:
-                    if c_0dte_t.bid and c_0dte_t.bid > 0: atm_call_bid = round(float(c_0dte_t.bid), 2)
-                    if c_0dte_t.ask and c_0dte_t.ask > 0: atm_call_ask = round(float(c_0dte_t.ask), 2)
-                if p_0dte_t:
-                    if p_0dte_t.bid and p_0dte_t.bid > 0: atm_put_bid = round(float(p_0dte_t.bid), 2)
-                    if p_0dte_t.ask and p_0dte_t.ask > 0: atm_put_ask = round(float(p_0dte_t.ask), 2)
 
                 # Find the Put 90 and Call 120
                 put_t = next((t for t in option_tickers if t.contract.right == 'P' and t.contract.strike != atm_strike), None)
@@ -277,7 +440,14 @@ def main():
                     "callBid": atm_call_bid,
                     "callAsk": atm_call_ask,
                     "putBid": atm_put_bid,
-                    "putAsk": atm_put_ask
+                    "putAsk": atm_put_ask,
+                    "esCallBid": _quote(es_call_ticker, 'bid'),
+                    "esCallAsk": _quote(es_call_ticker, 'ask'),
+                    "esPutBid": _quote(es_put_ticker, 'bid'),
+                    "esPutAsk": _quote(es_put_ticker, 'ask'),
+                    "esAtmStrike": es_atm_strike,
+                    "spxAtmStrike": spx_atm_strike,
+                    "spxRef": spx_ref,
                 }
                 
                 # Save locally

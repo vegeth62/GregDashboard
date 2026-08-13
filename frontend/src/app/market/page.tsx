@@ -762,12 +762,31 @@ export default function MarketPage() {
                 const hours = now.getHours();
                 const minutes = now.getMinutes();
                 const esfStr = data.esf.toFixed(2);
-                const spxStr = data.spx ? data.spx.toFixed(2) : (data.esf - 15).toFixed(2);
+                // SPX vero se l'indice quota; altrimenti il riferimento del
+                // poller (ultimo prezzo, poi chiusura precedente). Il basis
+                // che ne esce include il movimento notturno, quindi e' una
+                // stima -- ma e' misurata, non il 15 fisso di prima.
+                const spxRef = data.spx ?? data.spxRef ?? null;
+                const spxStr = spxRef ? spxRef.toFixed(2) : (data.esf - 15).toFixed(2);
+
+                const q = (v: unknown) => (typeof v === 'number' && isFinite(v) && v > 0 ? v.toFixed(2) : '');
 
                 if (hours === 10 && minutes === 35) {
-                    setRangeCalcMorning(prev => prev.es ? prev : { ...prev, es: esfStr, spx: spxStr });
+                    // Straddle dalla chain ES: alle 10:35 CET sono le 04:35 a
+                    // New York e le SPX quotano in Global Trading Hours con
+                    // spread larghi, mentre le ES 0DTE sono piene su CME.
+                    setRangeCalcMorning(prev => prev.es ? prev : {
+                        ...prev, es: esfStr, spx: spxStr,
+                        callBid: q(data.esCallBid), callAsk: q(data.esCallAsk),
+                        putBid: q(data.esPutBid), putAsk: q(data.esPutAsk),
+                    });
                 } else if (hours === 15 && minutes === 35) {
-                    setRangeCalcOb(prev => prev.es ? prev : { ...prev, es: esfStr, spx: spxStr });
+                    // A mercato aperto lo straddle torna sulla chain SPX.
+                    setRangeCalcOb(prev => prev.es ? prev : {
+                        ...prev, es: esfStr, spx: spxStr,
+                        callBid: q(data.callBid), callAsk: q(data.callAsk),
+                        putBid: q(data.putBid), putAsk: q(data.putAsk),
+                    });
                 }
             }
 
