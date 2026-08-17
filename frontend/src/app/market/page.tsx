@@ -18,6 +18,7 @@ import GexPage from '../gex/page';
 import annotationPlugin from 'chartjs-plugin-annotation';
 import 'chartjs-adapter-date-fns';
 import { Line } from 'react-chartjs-2';
+import { leggiRefLines, salvaRefLines, leggiVisibilita, REF_LINES_VIS_KEY } from '@/lib/refLines';
 
 ChartJS.register(
     CategoryScale,
@@ -690,29 +691,21 @@ export default function MarketPage() {
     }, []);
 
     // ---- Reference lines persistence ----
+    // La logica sta in lib/refLines: la legge anche /gex, e tenerne due copie
+    // e' gia' costato un asse Y andato a 2026.
     useEffect(() => {
-        const saved = localStorage.getItem('marketRefLines');
-        if (saved) {
-            try {
-                const parsed = JSON.parse(saved);
-                setRefLines(prev => ({ ...prev, ...parsed }));
-            } catch { }
-        }
-        const savedVis = localStorage.getItem('marketRefLineVisibility');
-        if (savedVis) {
-            try {
-                const parsed = JSON.parse(savedVis);
-                setRefLineVisibility(prev => ({ ...prev, ...parsed }));
-            } catch { }
-        }
+        const salvate = leggiRefLines();
+        if (salvate) setRefLines(prev => ({ ...prev, ...salvate }));
+        const vis = leggiVisibilita();
+        if (vis) setRefLineVisibility(prev => ({ ...prev, ...vis }));
     }, []);
 
     useEffect(() => {
-        localStorage.setItem('marketRefLines', JSON.stringify(refLines));
+        salvaRefLines(refLines as unknown as Record<string, string>);
     }, [refLines]);
 
     useEffect(() => {
-        localStorage.setItem('marketRefLineVisibility', JSON.stringify(refLineVisibility));
+        localStorage.setItem(REF_LINES_VIS_KEY, JSON.stringify(refLineVisibility));
     }, [refLineVisibility]);
 
     // ---- Range Calculator persistence ----

@@ -59,23 +59,43 @@ export async function GET(request: Request) {
         // Su Vercel esiste solo questa strada: il filesystem non ha i JSON
         // dei poller, che girano sulla macchina locale.
         if (supabase) {
-            let query = supabase
-                .from('volumes_snapshots')
-                .select('time, spx_price, is_opening, volumes')
-                .eq('date', targetDate)
-                .order('time', { ascending: true });
+            // PostgREST tronca a 1000 righe senza segnalarlo, e a uno snapshot
+            // ogni 10 secondi il tetto arriva dopo meno di tre ore: senza
+            // paginare, il primo caricamento perdeva tutto il resto della
+            // sessione. Gli aggiornamenti con `since` non ne risentivano, il
+            // che rendeva il buco difficile da notare.
+            const PAGE = 1000;
+            const MAX = 10000; // ~28h a 10 secondi, con margine
+            const righe: { time: string; spx_price: number | null; is_opening: boolean; volumes: unknown }[] = [];
+            let erroreDb = false;
 
-            // Il cuore del risparmio di banda: con `since` il client riceve
-            // solo gli snapshot comparsi dopo l'ultimo che gia' possiede,
-            // ~1,8 KB invece dell'intera sessione.
-            if (since) query = query.gt('time', since);
+            for (let from = 0; from < MAX; from += PAGE) {
+                let query = supabase
+                    .from('volumes_snapshots')
+                    .select('time, spx_price, is_opening, volumes')
+                    .eq('date', targetDate)
+                    .order('time', { ascending: true })
+                    .range(from, from + PAGE - 1);
 
-            const { data, error } = await query;
+                // Il cuore del risparmio di banda: con `since` il client riceve
+                // solo gli snapshot comparsi dopo l'ultimo che gia' possiede,
+                // ~1,8 KB invece dell'intera sessione.
+                if (since) query = query.gt('time', since);
 
-            if (error) {
-                console.error('Volumes Supabase error:', error.message);
-            } else if (data) {
-                const history: VolumeSnapshot[] = data.map((row) => ({
+                const { data, error } = await query;
+
+                if (error) {
+                    console.error('Volumes Supabase error:', error.message);
+                    erroreDb = true;
+                    break;
+                }
+                if (!data || data.length === 0) break;
+                righe.push(...data);
+                if (data.length < PAGE) break;
+            }
+
+            if (!erroreDb) {
+                const history: VolumeSnapshot[] = righe.map((row) => ({
                     time: row.time,
                     spxPrice: row.spx_price,
                     isOpening: row.is_opening,

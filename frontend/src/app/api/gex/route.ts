@@ -160,18 +160,40 @@ export async function GET(request: Request) {
         let snapshots: Snapshot[] | null = null;
 
         if (supabase) {
-            let query = supabase
-                .from('volumes_snapshots')
-                .select('time, spx_price, und_price, volumes')
-                .eq('date', targetDate)
-                .order('time', { ascending: true });
-            if (since) query = query.gt('time', since);
-            const { data, error } = await query;
+            // PostgREST tronca a 1000 righe (`db-max-rows`) senza dire niente.
+            // Il poller scrive uno snapshot ogni 10 secondi, quindi il tetto
+            // arriva dopo meno di tre ore di sessione: da li' in poi il primo
+            // caricamento della pagina restava fermo a meta' pomeriggio,
+            // mentre gli aggiornamenti con `since` -- poche righe per volta --
+            // continuavano ad arrivare. Il risultato era un grafico che
+            // sembrava vivo ma con un buco in mezzo.
+            const PAGE = 1000;
+            const MAX = 10000; // ~28h a 10 secondi, con margine
+            const righe: { time: string; spx_price: number | null; und_price: number | null; volumes: unknown }[] = [];
+            let erroreDb = false;
 
-            if (error) {
-                console.error('GEX Supabase error:', error.message);
-            } else if (data) {
-                snapshots = data.map((r) => ({
+            for (let from = 0; from < MAX; from += PAGE) {
+                let query = supabase
+                    .from('volumes_snapshots')
+                    .select('time, spx_price, und_price, volumes')
+                    .eq('date', targetDate)
+                    .order('time', { ascending: true })
+                    .range(from, from + PAGE - 1);
+                if (since) query = query.gt('time', since);
+                const { data, error } = await query;
+
+                if (error) {
+                    console.error('GEX Supabase error:', error.message);
+                    erroreDb = true;
+                    break;
+                }
+                if (!data || data.length === 0) break;
+                righe.push(...data);
+                if (data.length < PAGE) break;
+            }
+
+            if (!erroreDb) {
+                snapshots = righe.map((r) => ({
                     time: r.time,
                     spxPrice: r.spx_price,
                     undPrice: r.und_price,

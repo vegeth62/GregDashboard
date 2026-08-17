@@ -14,6 +14,7 @@ import {
   Legend
 } from 'chart.js';
 import 'chartjs-adapter-date-fns';
+import { leggiRefLines, leggiVisibilita } from '@/lib/refLines';
 
 // Base registration (safe for SSR)
 ChartJS.register(
@@ -72,14 +73,10 @@ export default function GexPage() {
   const [refLineVisibility, setRefLineVisibility] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    const saved = localStorage.getItem('marketRefLines');
-    if (saved) {
-      try { setRefLines(JSON.parse(saved)); } catch {}
-    }
-    const savedVis = localStorage.getItem('marketRefLineVisibility');
-    if (savedVis) {
-      try { setRefLineVisibility(JSON.parse(savedVis)); } catch {}
-    }
+    const salvate = leggiRefLines();
+    if (salvate) setRefLines(salvate);
+    const vis = leggiVisibilita();
+    if (vis) setRefLineVisibility(vis);
   }, []);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -212,10 +209,17 @@ export default function GexPage() {
     const strikes = gexProfile.map((p) => p.strike);
     const prices = filteredPrices.map((p) => p.spxPrice).filter((p): p is number => !!p);
 
+    // Gli strike sono il riferimento di scala: un livello lontano piu' del 20%
+    // da li' non e' un livello, e' un dato sporco. Senza questo controllo
+    // bastava una chiave estranea in `marketRefLines` per portare il minimo
+    // dell'asse a 2026 e schiacciare tutto il grafico in una striscia.
+    const centro = strikes.length > 0 ? (Math.min(...strikes) + Math.max(...strikes)) / 2 : null;
+    const plausibile = (v: number) => centro === null || Math.abs(v - centro) <= centro * 0.2;
+
     const refLevels: number[] = [];
     Object.entries(refLines).forEach(([key, valStr]) => {
       const val = parseFloat(valStr);
-      if (!isNaN(val) && refLineVisibility[key] !== false) {
+      if (!isNaN(val) && refLineVisibility[key] !== false && plausibile(val - currentBasis)) {
         refLevels.push(val - currentBasis);
       }
     });
