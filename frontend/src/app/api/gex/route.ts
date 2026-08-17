@@ -46,12 +46,23 @@ interface Snapshot {
     volumes: StrikeRow[];
 }
 
+/**
+ * Flusso NUOVO di uno snapshot: il gamma exposure dei soli contratti
+ * scambiati da quello precedente, non il totale di giornata.
+ */
 interface GexPoint {
     time: string;
     strike: number;
-    /** Pesato sul volume scambiato oggi: misura di flusso. */
+    /** Dai contratti scambiati fra i due snapshot. */
     gex: number;
-    /** Pesato sull'open interest: misura di posizionamento. Il GEX canonico. */
+    /** Dalla variazione di open interest, intraday quasi sempre zero. */
+    gexOi: number;
+}
+
+/** Totale di giornata per strike: l'ultimo valore cumulato disponibile. */
+interface ProfileRow {
+    strike: number;
+    gex: number;
     gexOi: number;
 }
 
@@ -110,8 +121,45 @@ function strikeGex(gamma: number, netContracts: number, spot: number): number {
     return Math.round((dollars / 1e6) * 100) / 100;
 }
 
-function toGexPoints(snapshots: Snapshot[], dateStr: string): GexPoint[] {
-    const out: GexPoint[] = [];
+/** Contratti netti di uno strike all'ultimo snapshot visto. */
+interface Netti {
+    vol: number;
+    oi: number;
+}
+
+/**
+ * Traduce gli snapshot in flusso nuovo piu' profilo cumulato.
+ *
+ * Il volume che il poller legge da TWS e' cumulato dall'apertura: ogni
+ * snapshot porta il totale della giornata, non quanto e' passato negli
+ * ultimi dieci secondi. Restituire quel totale come una serie di punti nel
+ * tempo -- come si faceva finche' i dati erano sintetici, dove ogni
+ * estrazione era indipendente -- disegna 900 bolle quasi identiche per
+ * strike, una sopra l'altra: le legende "Addition" e "Subtraction" dicono
+ * flusso ma mostrano giacenza, e il grafico diventa una banda piena
+ * illeggibile che pesa due megabyte.
+ *
+ * Qui si separano le due domande:
+ *   `points`  quanto e' stato scambiato FRA due snapshot, valutato al gamma
+ *             corrente: e' il flusso, ed e' quello che ha senso disporre su
+ *             un asse dei tempi. Vale zero quando nessuno ha scambiato, e in
+ *             quel caso il punto non si manda proprio.
+ *   `profile` il totale di giornata per strike, che e' semplicemente
+ *             l'ultimo cumulato: e' quello che serve per i muri e le barre.
+ *
+ * Si differenziano i CONTRATTI, non il GEX: il gamma si muove a ogni
+ * snapshot con lo spot e la volatilita', quindi differenziare il GEX
+ * spaccerebbe per flusso anche la semplice rivalutazione di posizioni ferme.
+ */
+function elaboraSnapshot(
+    snapshots: Snapshot[],
+    dateStr: string,
+    base: Map<number, Netti> | null,
+): { points: GexPoint[]; profile: ProfileRow[] } {
+    const points: GexPoint[] = [];
+    const precedenti = new Map<number, Netti>(base ?? []);
+    const profilo = new Map<number, ProfileRow>();
+
     for (const snap of snapshots) {
         const timeEt = romeToNewYork(dateStr, snap.time);
         // undPrice e' il sottostante secondo IBKR, quello su cui il gamma e'
@@ -122,13 +170,36 @@ function toGexPoints(snapshots: Snapshot[], dateStr: string): GexPoint[] {
 
         for (const row of snap.volumes) {
             if (row.gamma == null || !Number.isFinite(row.gamma)) continue;
-            const gex = strikeGex(row.gamma, (row.calls ?? 0) - (row.puts ?? 0), spot);
-            const gexOi = strikeGex(row.gamma, (row.callsOi ?? 0) - (row.putsOi ?? 0), spot);
-            if (gex === 0 && gexOi === 0) continue;
-            out.push({ time: timeEt, strike: row.strike, gex, gexOi });
+
+            const vol = (row.calls ?? 0) - (row.puts ?? 0);
+            const oi = (row.callsOi ?? 0) - (row.putsOi ?? 0);
+
+            profilo.set(row.strike, {
+                strike: row.strike,
+                gex: strikeGex(row.gamma, vol, spot),
+                gexOi: strikeGex(row.gamma, oi, spot),
+            });
+
+            const prec = precedenti.get(row.strike);
+            precedenti.set(row.strike, { vol, oi });
+            // Primo snapshot che vede questo strike: non c'e' un "prima" da
+            // cui misurare il flusso. Il cumulato entra comunque nel profilo.
+            if (!prec) continue;
+
+            const dVol = vol - prec.vol;
+            const dOi = oi - prec.oi;
+            if (dVol === 0 && dOi === 0) continue;
+
+            points.push({
+                time: timeEt,
+                strike: row.strike,
+                gex: strikeGex(row.gamma, dVol, spot),
+                gexOi: strikeGex(row.gamma, dOi, spot),
+            });
         }
     }
-    return out;
+
+    return { points, profile: [...profilo.values()].sort((a, b) => a.strike - b.strike) };
 }
 
 function readLocalSnapshots(dateStr: string): Snapshot[] | null {
@@ -146,6 +217,36 @@ function readLocalSnapshots(dateStr: string): Snapshot[] | null {
         }
     }
     return null;
+}
+
+/**
+ * L'ultimo snapshot non oltre `since`, che fa da base per il primo delta di
+ * una richiesta incrementale. Una riga sola, quindi non paga la pena di
+ * paginare.
+ */
+async function leggiSnapshotPrecedente(dateStr: string, since: string): Promise<Snapshot | null> {
+    if (supabase) {
+        const { data, error } = await supabase
+            .from('volumes_snapshots')
+            .select('time, spx_price, und_price, volumes')
+            .eq('date', dateStr)
+            .lte('time', since)
+            .order('time', { ascending: false })
+            .limit(1);
+        if (!error && data && data.length > 0) {
+            return {
+                time: data[0].time,
+                spxPrice: data[0].spx_price,
+                undPrice: data[0].und_price,
+                volumes: data[0].volumes as StrikeRow[],
+            };
+        }
+        if (error) console.error('GEX base snapshot error:', error.message);
+    }
+    const local = readLocalSnapshots(dateStr);
+    if (!local) return null;
+    const prima = local.filter((s) => s.time <= since);
+    return prima.length > 0 ? prima[prima.length - 1] : null;
 }
 
 export async function GET(request: Request) {
@@ -207,7 +308,24 @@ export async function GET(request: Request) {
             snapshots = since ? local.filter((s) => s.time > since) : local;
         }
 
-        const points = toGexPoints(snapshots, targetDate);
+        // Il flusso e' una differenza, quindi il primo snapshot dopo `since`
+        // ha bisogno di quello prima di `since` per essere misurato: senza,
+        // ogni giro da 30 secondi perderebbe un pezzo di scambiato.
+        let base: Map<number, Netti> | null = null;
+        if (since && snapshots.length > 0) {
+            const precedente = await leggiSnapshotPrecedente(targetDate, since);
+            if (precedente) {
+                base = new Map();
+                for (const row of precedente.volumes ?? []) {
+                    base.set(row.strike, {
+                        vol: (row.calls ?? 0) - (row.puts ?? 0),
+                        oi: (row.callsOi ?? 0) - (row.putsOi ?? 0),
+                    });
+                }
+            }
+        }
+
+        const { points, profile } = elaboraSnapshot(snapshots, targetDate, base);
         // `lastTime` e' l'ora di Roma dell'ultimo snapshot: il client la
         // rimanda come `since`. I punti invece portano l'ora di New York,
         // che e' quella su cui ragiona la pagina.
@@ -215,7 +333,9 @@ export async function GET(request: Request) {
 
         // Con `since` una risposta vuota e' normale: vuol dire solo che non
         // sono arrivati snapshot nuovi. Il 503 vale solo al primo caricamento.
-        if (!since && points.length === 0) {
+        // Si guarda il profilo, non i punti: a mercato fermo puo' non essere
+        // passato un solo contratto, ma le posizioni ci sono lo stesso.
+        if (!since && profile.length === 0) {
             // Nessun gamma disponibile: il poller dei volumi gira solo nella
             // finestra 13:30-22:00, e prima di allora non c'e' niente da
             // calcolare. Meglio dirlo che restituire numeri inventati.
@@ -228,7 +348,22 @@ export async function GET(request: Request) {
             );
         }
 
-        return NextResponse.json({ date: targetDate, since, lastTime, points }, { status: 200 });
+        // Il primo caricamento non manda tutto il flusso della giornata: a
+        // fine sessione sono decine di migliaia di bolle e qualche megabyte,
+        // per un grafico che a quella densita' e' comunque una macchia. Si
+        // manda l'ultimo tratto -- circa un'ora e mezza -- e il resto della
+        // giornata resta comunque rappresentato, perche' `profile` e'
+        // cumulato dall'apertura e non dipende da questo taglio.
+        const MAX_PUNTI = 8000;
+        const tagliati = points.length > MAX_PUNTI;
+        const finali = tagliati ? points.slice(-MAX_PUNTI) : points;
+
+        // `profile` sostituisce quello che il client ha, non ci si somma: e'
+        // gia' il totale di giornata. `points` invece si accoda.
+        return NextResponse.json(
+            { date: targetDate, since, lastTime, points: finali, profile, troncato: tagliati },
+            { status: 200 },
+        );
     } catch (e: unknown) {
         const message = e instanceof Error ? e.message : 'Unexpected error';
         return NextResponse.json({ error: message }, { status: 500 });

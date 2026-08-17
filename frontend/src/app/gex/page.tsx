@@ -22,12 +22,20 @@ ChartJS.register(
   BarElement, Tooltip, TimeScale, Legend
 );
 
+/** Flusso nuovo fra due snapshot: quanto e' stato scambiato in quei secondi. */
 interface GexPoint {
   time: string;
   strike: number;
-  /** Pesato sul volume scambiato oggi: misura di flusso. */
+  /** Dai contratti scambiati fra i due snapshot. */
   gex: number;
-  /** Pesato sull'open interest: misura di posizionamento, il GEX canonico. */
+  /** Dalla variazione di open interest, intraday quasi sempre zero. */
+  gexOi: number;
+}
+
+/** Totale di giornata per strike, gia' cumulato dal server. */
+interface ProfileRow {
+  strike: number;
+  gex: number;
   gexOi: number;
 }
 
@@ -37,6 +45,13 @@ interface SpxHistoryPoint {
   spx?: number | null;
   esf?: number | null;
 }
+
+/**
+ * Tetto ai punti di flusso tenuti in memoria. Sono bolle su un asse dei
+ * tempi: oltre questo numero si sovrappongono comunque, e l'unico effetto di
+ * tenerne di piu' e' far rallentare il ridisegno a ogni aggiornamento.
+ */
+const MAX_PUNTI = 8000;
 
 function timeToMinutes(timeStr: string): number {
   if (!timeStr) return 0;
@@ -56,6 +71,7 @@ function getESTNowStr(): string {
 
 export default function GexPage() {
   const [gexData, setGexData] = useState<GexPoint[]>([]);
+  const [profile, setProfile] = useState<ProfileRow[]>([]);
   const [spxHistory, setSpxHistory] = useState<SpxHistoryPoint[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'lines' | 'bars'>('lines');
@@ -122,10 +138,16 @@ export default function GexPage() {
         const json = await res.json();
         if (json.lastTime) lastGexTime.current = json.lastTime;
         const incoming: GexPoint[] = json.points ?? [];
+        // Il profilo e' gia' il totale di giornata: si sostituisce, non si
+        // somma. I punti sono flusso, quelli si accodano -- ma solo entro la
+        // finestra che il grafico puo' mostrare, altrimenti a fine sessione
+        // ci si ritrova a ridisegnare decine di migliaia di bolle.
+        const nuovoProfilo: ProfileRow[] = json.profile ?? [];
+        if (nuovoProfilo.length > 0) setProfile(nuovoProfilo);
         if (since) {
-          if (incoming.length > 0) setGexData((prev) => [...prev, ...incoming]);
+          if (incoming.length > 0) setGexData((prev) => [...prev, ...incoming].slice(-MAX_PUNTI));
         } else {
-          setGexData(incoming);
+          setGexData(incoming.slice(-MAX_PUNTI));
         }
         setError(null);
       } catch (e: any) {
@@ -178,20 +200,10 @@ export default function GexPage() {
   }, [filteredGexData, spxHistory]);
 
   const gexProfile = useMemo(() => {
-    // Il volume delle opzioni e' cumulato dall'apertura, quindi ogni snapshot
-    // porta gia' il totale della giornata: il profilo e' l'ULTIMO valore per
-    // strike, non la somma nel tempo. Sommare (come si faceva con i dati
-    // sintetici, dove ogni punto era un'estrazione indipendente) moltiplicherebbe
-    // il GEX per il numero di snapshot.
-    const latest: Record<number, { minute: number; gex: number }> = {};
-    filteredGexData.forEach((p) => {
-      const minute = timeToMinutes(p.time);
-      const prev = latest[p.strike];
-      const value = gexBasis === 'oi' ? p.gexOi : p.gex;
-      if (!prev || minute >= prev.minute) latest[p.strike] = { minute, gex: value };
-    });
-    return Object.entries(latest).map(([strike, v]) => ({ strike: parseFloat(strike), gex: v.gex }));
-  }, [filteredGexData, gexBasis]);
+    // Il totale di giornata arriva gia' cumulato dal server: qui si sceglie
+    // solo quale delle due misure mostrare.
+    return profile.map((p) => ({ strike: p.strike, gex: gexBasis === 'oi' ? p.gexOi : p.gex }));
+  }, [profile, gexBasis]);
 
   const currentBasis = useMemo(() => {
     for (let i = spxHistory.length - 1; i >= 0; i--) {
@@ -358,9 +370,12 @@ export default function GexPage() {
       .filter(d => d.time <= now)
       .map((d) => {
         const t = d.time.includes(':') ? d.time : `${d.time}:00`;
-        return { x: new Date(`${todayStr}T${t}`), y: d.strike, gex: d.gex };
+        // Le bolle seguono il selettore come le barre: in modalita' open
+        // interest sono quasi sempre vuote, ed e' corretto -- l'OI e' fermo
+        // al closing del giorno prima e intraday non si muove.
+        return { x: new Date(`${todayStr}T${t}`), y: d.strike, gex: gexBasis === 'oi' ? d.gexOi : d.gex };
       })
-      .filter((pt) => !isNaN(pt.x.getTime()));
+      .filter((pt) => !isNaN(pt.x.getTime()) && pt.gex !== 0);
 
     const maxSingleEvent = scatterPoints.reduce((max, p) => Math.max(max, Math.abs(p.gex)), 0);
     const threshold = maxSingleEvent * 0.10; // Lower threshold to show more granular addition/subtraction data
@@ -405,7 +420,7 @@ export default function GexPage() {
     if (viewMode === 'lines') return [priceDataset, blueDotsDataset, purpleDotsDataset];
 
     const posGexDataset = {
-      type: 'bar' as const, label: 'Positive GEX (Bn)',
+      type: 'bar' as const, label: 'Positive GEX (M$/1%)',
       data: currentGexProfile.map((p) => ({ x: p.gex > 0 ? p.gex : 0, y: p.strike })),
       xAxisID: 'xGex', yAxisID: 'y',
       backgroundColor: (ctx: any) => `rgba(34, 197, 94, ${Math.min(0.55, Math.max(0.12, (ctx.raw?.x || 0) / 15))})`,
@@ -413,7 +428,7 @@ export default function GexPage() {
       borderWidth: 1, barThickness: 8, indexAxis: 'y' as const,
     };
     const negGexDataset = {
-      type: 'bar' as const, label: 'Negative GEX (Bn)',
+      type: 'bar' as const, label: 'Negative GEX (M$/1%)',
       data: currentGexProfile.map((p) => ({ x: p.gex < 0 ? Math.abs(p.gex) : 0, y: p.strike })),
       xAxisID: 'xGex', yAxisID: 'y',
       backgroundColor: (ctx: any) => `rgba(239, 68, 68, ${Math.min(0.55, Math.max(0.12, (ctx.raw?.x || 0) / 15))})`,
@@ -421,7 +436,7 @@ export default function GexPage() {
       borderWidth: 1, barThickness: 8, indexAxis: 'y' as const,
     };
     return [priceDataset, posGexDataset, negGexDataset];
-  }, [viewMode]);
+  }, [viewMode, gexBasis]);
 
   const handleTimeWindowChange = useCallback((w: number | 'all') => {
     setTimeWindow(w);
@@ -476,7 +491,7 @@ export default function GexPage() {
           },
           xGex: {
             type: 'linear' as const, position: 'top' as const, display: viewMode === 'bars',
-            title: { display: true, text: 'SPX Gamma Exposure (Bn)', color: '#94a3b8', font: { size: 11, weight: 'bold' as const } },
+            title: { display: true, text: 'SPX Gamma Exposure (M$ per 1%)', color: '#94a3b8', font: { size: 11, weight: 'bold' as const } },
             grid: { display: false }, ticks: { color: '#94a3b8', font: { size: 10 } }, min: 0,
           },
           y: {
@@ -498,8 +513,8 @@ export default function GexPage() {
               label: (ctx: any) => {
                 const l = ctx.dataset.label || '';
                 if (l.includes('SPX Price')) return `SPX Price: ${ctx.parsed.y.toFixed(2)}`;
-                if (l.includes('GEX+') || l.includes('GEX-')) return `${l.split(' ')[0]} Strike ${ctx.parsed.y}: ${(ctx.raw?.gex || 0).toFixed(2)} Bn`;
-                return `${l}: ${ctx.parsed.x.toFixed(2)} Bn`;
+                if (l.includes('GEX+') || l.includes('GEX-')) return `${l.split(' ')[0]} Strike ${ctx.parsed.y}: ${(ctx.raw?.gex || 0).toFixed(2)} M$`;
+                return `${l}: ${ctx.parsed.x.toFixed(2)} M$`;
               },
             },
           },
