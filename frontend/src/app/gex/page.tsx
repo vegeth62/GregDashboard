@@ -9,6 +9,9 @@ import {
   PointElement,
   LineElement,
   BarElement,
+  BarController,
+  LineController,
+  ScatterController,
   Tooltip,
   TimeScale,
   Legend
@@ -16,10 +19,18 @@ import {
 import 'chartjs-adapter-date-fns';
 import { leggiRefLines, leggiVisibilita } from '@/lib/refLines';
 
-// Base registration (safe for SSR)
+// Base registration (safe for SSR).
+// I *Controller servono quanto gli Element: qui il grafico si costruisce a
+// mano con `new ChartJS`, e chart.js e' tree-shakeable, quindi senza
+// registrarli il primo dataset di tipo line fa morire il render con
+// `"line" is not a registered controller`. Finora non si notava perche'
+// react-chartjs-2 registra LineController quando /market monta il suo <Line>:
+// arrivando su /gex dal menu il controller c'era gia', aprendo /gex di suo
+// no.
 ChartJS.register(
   LinearScale, CategoryScale, PointElement, LineElement,
-  BarElement, Tooltip, TimeScale, Legend
+  BarElement, BarController, LineController, ScatterController,
+  Tooltip, TimeScale, Legend
 );
 
 /** Flusso nuovo fra due snapshot: quanto e' stato scambiato in quei secondi. */
@@ -52,15 +63,6 @@ interface SpxHistoryPoint {
  * tenerne di piu' e' far rallentare il ridisegno a ogni aggiornamento.
  */
 const MAX_PUNTI = 8000;
-
-function timeToMinutes(timeStr: string): number {
-  if (!timeStr) return 0;
-  const parts = timeStr.split(':').map(Number);
-  const hrs = parts[0] || 0;
-  const mins = parts[1] || 0;
-  const secs = parts[2] || 0;
-  return hrs * 60 + mins + secs / 60;
-}
 
 function getESTNowStr(): string {
   const localDate = new Date();
@@ -191,13 +193,13 @@ export default function GexPage() {
     return gexData.filter((d) => d.time <= now);
   }, [gexData]);
 
-  const latestDataTime = useMemo(() => {
-    const gexMax = filteredGexData.length > 0 ? Math.max(...filteredGexData.map(d => timeToMinutes(d.time))) : 0;
-    const now = getESTNowStr();
-    const filteredPrices = spxHistory.filter(dp => dp.time <= now);
-    const spxMax = filteredPrices.length > 0 ? Math.max(...filteredPrices.map(dp => timeToMinutes(dp.time))) : 0;
-    return Math.max(gexMax, spxMax);
-  }, [filteredGexData, spxHistory]);
+  // `latestDataTime` stava qui: calcolato a ogni aggiornamento e mai letto da
+  // nessuno. Non era solo peso morto -- faceva `Math.max(...punti)`, e lo
+  // spread passa un argomento per elemento: oltre qualche decina di migliaia
+  // di punti lo stack finisce e la pagina muore con una eccezione
+  // client-side, che e' esattamente come si presentava il guasto.
+  // Gli spread rimasti qui sotto lavorano su array corti e delimitati (37
+  // strike, i livelli di riferimento), non sulla serie dei punti.
 
   const gexProfile = useMemo(() => {
     // Il totale di giornata arriva gia' cumulato dal server: qui si sceglie
@@ -238,8 +240,10 @@ export default function GexPage() {
 
     const allValues = [...strikes, ...prices, ...refLevels];
     if (allValues.length === 0) return { min: 7300, max: 7600 };
-    const min = Math.min(...allValues);
-    const max = Math.max(...allValues);
+    // Con reduce e non con lo spread: `prices` segue lo storico e cresce per
+    // tutta la sessione.
+    const min = allValues.reduce((a, b) => (b < a ? b : a), allValues[0]);
+    const max = allValues.reduce((a, b) => (b > a ? b : a), allValues[0]);
     const padding = (max - min) * 0.05 || 50;
     return { min: Math.floor(min - padding), max: Math.ceil(max + padding) };
   }, [gexProfile, spxHistory, refLines, refLineVisibility, currentBasis]);
