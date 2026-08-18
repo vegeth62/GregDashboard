@@ -1,0 +1,21 @@
+{
+  "skills": {
+    "run": true,
+    "code-review": true,
+    "security-review": true,
+    "graphify": false,
+    "design": false,
+    "dataviz": false,
+    "artifact-design": false,
+    "artifact-diagramming": false,
+    "artifact-capabilities": false,
+    "update-config": false,
+    "keybindings-help": false,
+    "simplify": false,
+    "fewer-permission-prompts": false,
+    "loop": false,
+    "schedule": false,
+    "claude-api": false,
+    "init": false
+  }
+}

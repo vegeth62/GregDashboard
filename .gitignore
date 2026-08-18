@@ -14,6 +14,7 @@ tmp/
 !package.json
 !tsconfig.json
 !project.json
+!.claude/settings.json
 
 # bytecode Python
 __pycache__/
