@@ -342,6 +342,13 @@ export default function MarketPage() {
     const manualYRightZoomingRef = useRef(false);
     const vertZoomRef = useRef<{ active: boolean; axis: 'y-left' | 'y-right'; startY: number; startRange: [number, number] } | null>(null);
     const horizZoomRef = useRef<{ active: boolean; startX: number; startRangeX: [any, any] } | null>(null);
+    // Shift + trascinamento su un asse Y: trasla quella sola scala, in su o in
+    // giu', lasciando ferme l'altra e il tempo. Senza Shift il trascinamento
+    // sull'asse resta lo zoom di sempre.
+    const axisPanRef = useRef<{ active: boolean; axis: 'y-left' | 'y-right'; startY: number; startRange: [number, number] } | null>(null);
+    // Assi che l'utente ha posizionato a mano: non vanno riagganciati ai dati,
+    // altrimenti il primo aggiornamento rimetterebbe la linea dove stava.
+    const axisPinnedRef = useRef<{ 'y-left': boolean; 'y-right': boolean }>({ 'y-left': false, 'y-right': false });
 
     // ---- Auth check ----
     useEffect(() => {
@@ -653,7 +660,9 @@ export default function MarketPage() {
                 const esValues = visiblePoints.map(d => d.esf).filter((v): v is number => v !== null);
                 // Se hai posizionato la vista trascinando, resta dove l'hai
                 // messa: l'ancoraggio serve solo a rimediare allo zoom.
-                const [rMin, rMax] = panLibRef.current ? bloccato : ancoraAiDati(bloccato, esValues);
+                const [rMin, rMax] = (panLibRef.current || axisPinnedRef.current['y-right'])
+                    ? bloccato
+                    : ancoraAiDati(bloccato, esValues);
                 chart.options.scales['y-right'].min = rMin;
                 chart.options.scales['y-right'].max = rMax;
                 if (manualLimitsRef.current) manualLimitsRef.current.yRight = [rMin, rMax];
@@ -665,7 +674,9 @@ export default function MarketPage() {
                 const bloccato: [number, number] = manualLimitsRef.current?.yLeft
                     ?? [chart.scales['y-left'].min, chart.scales['y-left'].max];
                 const vixValues = visiblePoints.map(d => d.vix).filter((v): v is number => v !== null);
-                const [rMin, rMax] = panLibRef.current ? bloccato : ancoraAiDati(bloccato, vixValues);
+                const [rMin, rMax] = (panLibRef.current || axisPinnedRef.current['y-left'])
+                    ? bloccato
+                    : ancoraAiDati(bloccato, vixValues);
                 chart.options.scales['y-left'].min = rMin;
                 chart.options.scales['y-left'].max = rMax;
                 if (manualLimitsRef.current) manualLimitsRef.current.yLeft = [rMin, rMax];
@@ -1139,6 +1150,23 @@ export default function MarketPage() {
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
 
+        // Shift + tasto sinistro sopra un asse Y: lo si trascina su e giu'.
+        // Va intercettato prima dello zoom verticale, che occupa la stessa
+        // area con lo stesso tasto.
+        if (e.button === 0 && e.shiftKey) {
+            const asse = (['y-left', 'y-right'] as const).find((id) => {
+                const sc = chart.scales[id];
+                return sc && x >= sc.left && x <= sc.right && y >= sc.top && y <= sc.bottom;
+            });
+            if (asse) {
+                const sc = chart.scales[asse];
+                axisPanRef.current = { active: true, axis: asse, startY: y, startRange: [sc.min, sc.max] };
+                isZoomedRef.current = true;
+                e.preventDefault();
+                return;
+            }
+        }
+
         // Check if mouse is over the right scale area (Y-axes)
         // Check if mouse is over the left scale area (VIX)
         const vScale = chart.scales['y-left'];
@@ -1185,6 +1213,42 @@ export default function MarketPage() {
     const handleGlobalMouseMove = (e: MouseEvent) => {
         const chart = chartRef.current;
         if (!chart) return;
+
+        // Trascinamento di un solo asse (Shift): l'ampiezza non cambia, si
+        // sposta l'intervallo.
+        const trascina = axisPanRef.current;
+        if (trascina && trascina.active) {
+            const rect = chart.canvas.getBoundingClientRect();
+            const y = e.clientY - rect.top;
+            const scala = chart.scales[trascina.axis];
+            const altezza = scala.bottom - scala.top;
+            if (altezza > 0) {
+                const [min0, max0] = trascina.startRange;
+                // Si parte sempre dai valori di inizio trascinamento: cosi' il
+                // movimento non accumula errore e tornando indietro col mouse
+                // si torna esattamente da dove si era partiti.
+                const perPixel = (max0 - min0) / altezza;
+                const salto = (y - trascina.startY) * perPixel;
+                const nuovi: [number, number] = [min0 + salto, max0 + salto];
+
+                chart.options.scales[trascina.axis].min = nuovi[0];
+                chart.options.scales[trascina.axis].max = nuovi[1];
+
+                manualZoomRef.current = true;
+                axisPinnedRef.current[trascina.axis] = true;
+                if (trascina.axis === 'y-left') {
+                    manualYLeftZoomingRef.current = true;
+                    manualLimitsRef.current.yLeft = nuovi;
+                } else {
+                    manualYRightZoomingRef.current = true;
+                    manualLimitsRef.current.yRight = nuovi;
+                }
+
+                updateZoomState();
+                chart.update('none');
+            }
+            return;
+        }
 
         // Vertical Zoom (Y-axes)
         if (vertZoomRef.current && vertZoomRef.current.active) {
@@ -1246,6 +1310,10 @@ export default function MarketPage() {
 
     const handleGlobalMouseUp = () => {
         let updated = false;
+        if (axisPanRef.current && axisPanRef.current.active) {
+            axisPanRef.current.active = false;
+            updated = true;
+        }
         if (vertZoomRef.current && vertZoomRef.current.active) {
             vertZoomRef.current.active = false;
             updated = true;
@@ -1317,6 +1385,7 @@ export default function MarketPage() {
             manualYLeftZoomingRef.current = false;
             manualYRightZoomingRef.current = false;
             manualLimitsRef.current = { x: null, yLeft: null, yRight: null };
+            axisPinnedRef.current = { 'y-left': false, 'y-right': false };
 
             // Explicitly clear all scale lockings
             delete chart.options.scales.x.min;
@@ -1424,6 +1493,18 @@ export default function MarketPage() {
                     // l'auto-scroll ne' l'ancoraggio agli assi la spostano piu'.
                     mode: 'xy' as const,
                     modifierKey: undefined,
+                    // Con Shift sopra un asse Y il trascinamento e' nostro e
+                    // muove quella scala soltanto: se lo prendesse anche il
+                    // plugin sposterebbe l'intera vista insieme a lei.
+                    onPanStart: ({ chart, point, event }: { chart: any; point: { x: number | null; y: number | null }; event: any }) => {
+                        if (!event?.srcEvent?.shiftKey || point?.x == null) return true;
+                        const px = point.x;
+                        const sopraUnAsse = (['y-left', 'y-right'] as const).some((id) => {
+                            const sc = chart.scales[id];
+                            return sc && px >= sc.left && px <= sc.right;
+                        });
+                        return !sopraUnAsse;
+                    },
                     onPanComplete: ({ chart }: { chart: any }) => {
                         isZoomedRef.current = true;
                         manualZoomRef.current = true;
