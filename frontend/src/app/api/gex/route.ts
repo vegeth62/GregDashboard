@@ -66,6 +66,35 @@ interface ProfileRow {
     gexOi: number;
 }
 
+/**
+ * Il sottostante al momento dello snapshot, cosi' come IBKR lo vedeva quando
+ * ha valutato il gamma. E' la serie giusta per la linea dello spot su una
+ * pagina di gamma: viene dallo stesso istante e dallo stesso feed, non da
+ * /api/market con la sua conversione di fuso fatta a mano.
+ */
+interface SpotPoint {
+    time: string;
+    price: number;
+}
+
+/** Il profilo com'era N minuti fa, per mostrare da che parte si sta muovendo. */
+interface ProfileSnapshot {
+    minutesAgo: number;
+    time: string;
+    rows: ProfileRow[];
+}
+
+/** Quanto lontano indietro guardano i pallini storici. */
+const MINUTI_STORICO = [1, 5, 10];
+
+/** Un punto di spot ogni mezzo minuto: piu' fitto non si distingue. */
+const SPOT_STEP_SEC = 30;
+
+function toSeconds(hhmmss: string): number {
+    const [h, m, s] = hhmmss.split(':').map(Number);
+    return (h || 0) * 3600 + (m || 0) * 60 + (s || 0);
+}
+
 /** Moltiplicatore del contratto SPX. */
 const CONTRACT_SIZE = 100;
 
@@ -155,10 +184,23 @@ function elaboraSnapshot(
     snapshots: Snapshot[],
     dateStr: string,
     base: Map<number, Netti> | null,
-): { points: GexPoint[]; profile: ProfileRow[] } {
+    conStorico: boolean,
+): { points: GexPoint[]; profile: ProfileRow[]; spot: SpotPoint[]; profileHistory: ProfileSnapshot[] } {
     const points: GexPoint[] = [];
     const precedenti = new Map<number, Netti>(base ?? []);
     const profilo = new Map<number, ProfileRow>();
+    const spotSerie: SpotPoint[] = [];
+    let ultimoSpotSec = -Infinity;
+    let ultimoValido: SpotPoint | null = null;
+
+    // Il profilo di N minuti fa non si ricostruisce dai `points`: quelli sono
+    // differenze di contratti, mentre il profilo e' l'ultimo cumulato valutato
+    // al gamma di quel momento. Si tiene invece una copia mentre si cammina,
+    // ma solo sulla coda utile: dieci minuti a uno snapshot ogni dieci secondi
+    // sono una sessantina di copie, non le migliaia di tutta la giornata.
+    const ultimoSec = snapshots.length > 0 ? toSeconds(snapshots[snapshots.length - 1].time) : 0;
+    const inizioCoda = ultimoSec - Math.max(...MINUTI_STORICO) * 60;
+    const coda: { sec: number; time: string; rows: ProfileRow[] }[] = [];
 
     for (const snap of snapshots) {
         const timeEt = romeToNewYork(dateStr, snap.time);
@@ -167,6 +209,12 @@ function elaboraSnapshot(
         // dell'apertura del cash non esiste.
         const spot = snap.undPrice ?? snap.spxPrice ?? null;
         if (!spot || !Number.isFinite(spot) || !Array.isArray(snap.volumes)) continue;
+
+        const snapSec = toSeconds(snap.time);
+        if (snapSec - ultimoSpotSec >= SPOT_STEP_SEC) {
+            spotSerie.push({ time: timeEt, price: spot });
+            ultimoSpotSec = snapSec;
+        }
 
         for (const row of snap.volumes) {
             if (row.gamma == null || !Number.isFinite(row.gamma)) continue;
@@ -197,9 +245,43 @@ function elaboraSnapshot(
                 gexOi: strikeGex(row.gamma, dOi, spot),
             });
         }
+
+        if (conStorico && snapSec >= inizioCoda) {
+            coda.push({ sec: snapSec, time: timeEt, rows: [...profilo.values()] });
+        }
+        ultimoValido = { time: timeEt, price: spot };
     }
 
-    return { points, profile: [...profilo.values()].sort((a, b) => a.strike - b.strike) };
+    // L'ultimo prezzo non deve aspettare il prossimo passo di campionamento:
+    // e' quello che la pagina disegna come spot corrente.
+    if (ultimoValido && spotSerie[spotSerie.length - 1]?.time !== ultimoValido.time) {
+        spotSerie.push(ultimoValido);
+    }
+
+    const profileHistory: ProfileSnapshot[] = [];
+    for (const minuti of MINUTI_STORICO) {
+        const limite = ultimoSec - minuti * 60;
+        // Il piu' recente non oltre il limite: se la sessione e' appena
+        // cominciata non c'e', e quel pallino semplicemente non si disegna.
+        let scelto: { sec: number; time: string; rows: ProfileRow[] } | null = null;
+        for (const c of coda) {
+            if (c.sec <= limite && (!scelto || c.sec > scelto.sec)) scelto = c;
+        }
+        if (scelto) {
+            profileHistory.push({
+                minutesAgo: minuti,
+                time: scelto.time,
+                rows: scelto.rows.sort((a, b) => a.strike - b.strike),
+            });
+        }
+    }
+
+    return {
+        points,
+        profile: [...profilo.values()].sort((a, b) => a.strike - b.strike),
+        spot: spotSerie,
+        profileHistory,
+    };
 }
 
 function readLocalSnapshots(dateStr: string): Snapshot[] | null {
@@ -257,6 +339,10 @@ export async function GET(request: Request) {
         // Ogni snapshot vale ~37 punti: senza `since` la pagina riscaricherebbe
         // l'intera giornata a ogni giro.
         const since = sinceParam && /^\d{2}:\d{2}:\d{2}$/.test(sinceParam) ? sinceParam : null;
+        // `flow=0` per chi vuole solo il profilo per strike: le bolle del
+        // flusso sono il 95% della risposta (mezzo megabyte a fine sessione)
+        // e /spx-gamma non le disegna.
+        const conFlusso = searchParams.get('flow') !== '0';
 
         let snapshots: Snapshot[] | null = null;
 
@@ -325,7 +411,11 @@ export async function GET(request: Request) {
             }
         }
 
-        const { points, profile } = elaboraSnapshot(snapshots, targetDate, base);
+        // Lo storico serve solo al primo caricamento, per non far aspettare
+        // dieci minuti i pallini: dopo, il client ha gia' i profili che ha
+        // ricevuto e se li tiene da solo. Con `since` la finestra e' larga
+        // pochi secondi e non conterrebbe comunque niente.
+        const { points, profile, spot, profileHistory } = elaboraSnapshot(snapshots, targetDate, base, !since);
         // `lastTime` e' l'ora di Roma dell'ultimo snapshot: il client la
         // rimanda come `since`. I punti invece portano l'ora di New York,
         // che e' quella su cui ragiona la pagina.
@@ -355,13 +445,13 @@ export async function GET(request: Request) {
         // giornata resta comunque rappresentato, perche' `profile` e'
         // cumulato dall'apertura e non dipende da questo taglio.
         const MAX_PUNTI = 8000;
-        const tagliati = points.length > MAX_PUNTI;
-        const finali = tagliati ? points.slice(-MAX_PUNTI) : points;
+        const tagliati = conFlusso && points.length > MAX_PUNTI;
+        const finali = conFlusso ? (tagliati ? points.slice(-MAX_PUNTI) : points) : [];
 
         // `profile` sostituisce quello che il client ha, non ci si somma: e'
         // gia' il totale di giornata. `points` invece si accoda.
         return NextResponse.json(
-            { date: targetDate, since, lastTime, points: finali, profile, troncato: tagliati },
+            { date: targetDate, since, lastTime, points: finali, profile, spot, profileHistory, troncato: tagliati },
             { status: 200 },
         );
     } catch (e: unknown) {
