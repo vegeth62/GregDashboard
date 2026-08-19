@@ -334,7 +334,9 @@ async function leggiSnapshotPrecedente(dateStr: string, since: string): Promise<
 export async function GET(request: Request) {
     try {
         const { searchParams } = new URL(request.url);
-        const targetDate = searchParams.get('date') || getTodayKey();
+        // Solo la giornata corrente: le sessioni passate restano nel database
+        // ma non si servono, e non c'e' un parametro per chiederle.
+        const targetDate = getTodayKey();
         const sinceParam = searchParams.get('since');
         // Ogni snapshot vale ~37 punti: senza `since` la pagina riscaricherebbe
         // l'intera giornata a ogni giro.

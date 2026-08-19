@@ -121,18 +121,7 @@ export default function SpxGammaPage() {
     const [error, setError] = useState<string | null>(null);
     const [aggiornato, setAggiornato] = useState<string | null>(null);
     const [base, setBase] = useState<Base>('oi');
-    // `?date=YYYY-MM-DD` per rivedere una sessione passata. Si legge da
-    // window e non con useSearchParams, che pretenderebbe un confine
-    // <Suspense> attorno alla pagina solo per questo.
-    const [giorno, setGiorno] = useState<string | null>(null);
-    const [avviato, setAvviato] = useState(false);
     const lastTime = useRef<string | null>(null);
-
-    useEffect(() => {
-        const d = new URLSearchParams(window.location.search).get('date');
-        if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) setGiorno(d);
-        setAvviato(true);
-    }, []);
 
     const fetchGex = useCallback(async () => {
         try {
@@ -143,7 +132,6 @@ export default function SpxGammaPage() {
             // flusso, che da sole sono mezzo megabyte a fine sessione.
             const since = lastTime.current;
             const q = new URLSearchParams({ flow: '0' });
-            if (giorno) q.set('date', giorno);
             if (since) q.set('since', since);
             const res = await fetch(`/api/gex?${q}`, { cache: 'no-store' });
             if (!res.ok) {
@@ -179,14 +167,13 @@ export default function SpxGammaPage() {
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : 'Errore');
         }
-    }, [giorno]);
+    }, []);
 
     useEffect(() => {
-        if (!avviato) return;
         fetchGex();
         const id = setInterval(fetchGex, REFRESH_MS);
         return () => clearInterval(id);
-    }, [avviato, fetchGex]);
+    }, [fetchGex]);
 
     const spotData = useMemo(
         () => spot.map((p) => [timeStringToDate(p.time), p.price]),
@@ -476,16 +463,12 @@ export default function SpxGammaPage() {
                         <h1 className="text-2xl font-bold bg-gradient-to-r from-emerald-400 to-teal-400 bg-clip-text text-transparent">
                             SPX Gamma Exposure
                         </h1>
-                        {aggiornato && (giorno ? (
-                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium border bg-slate-500/20 text-slate-300 border-slate-500/30">
-                                ARCHIVIO {giorno} — ultimo {aggiornato} ET
-                            </span>
-                        ) : (
+                        {aggiornato && (
                             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium border bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                                 LIVE {aggiornato} ET
                             </span>
-                        ))}
+                        )}
                         {prezzoOra != null && (
                             <span className="text-xs text-slate-400">
                                 SPX <span className="text-cyan-400 font-semibold">{prezzoOra.toFixed(2)}</span>

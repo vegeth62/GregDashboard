@@ -990,6 +990,17 @@ export default function MarketPage() {
             const todayKey = getTodayKey();
             const localKey = `marketData_${todayKey}`;
 
+            // Le sessioni passate non si tengono: senza questa passata il
+            // browser accumulava una copia di ogni giornata, che nessuno
+            // rilegge piu' ma che resta li' a occupare la quota.
+            try {
+                const vecchie = Object.keys(localStorage).filter(
+                    (k) => /^(marketData|rangeCalc_morning|rangeCalc_ob)_\d{4}-\d{2}-\d{2}$/.test(k)
+                        && !k.endsWith(todayKey),
+                );
+                vecchie.forEach((k) => localStorage.removeItem(k));
+            } catch { }
+
             // If it's 00:00 start, clear old data
             if (isTradingJustStarted()) {
                 localStorage.removeItem(localKey);

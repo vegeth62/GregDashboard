@@ -25,7 +25,6 @@ export async function GET(request: Request) {
     try {
         const { searchParams } = new URL(request.url);
         const historyMode = searchParams.get('history') === 'true';
-        const dateParam = searchParams.get('date'); // e.g. ?date=2026-02-19
 
         const isSupabaseConfigured = supabaseUrl !== 'https://placeholder.supabase.co';
 
@@ -104,18 +103,9 @@ export async function GET(request: Request) {
             }));
         };
 
-        // --- Serve archived session ---
-        if (dateParam) {
-            let data = null;
-            if (isSupabaseConfigured) {
-                try {
-                    data = await fetchDayRows(dateParam, `time, vix, esf, spx, created_at, volTide, coneUp, coneDown, vwap, ${QUOTE_COLUMNS}`);
-                } catch (e) { console.error('Supabase fetch failed:', e); }
-            }
-            if (!data || data.length === 0) data = getLocalData(dateParam);
-
-            return NextResponse.json({ date: dateParam, history: formatHistory(data || []) }, { status: 200 });
-        }
+        // Le sessioni passate restano nel database ma non si servono: qui si
+        // risponde solo sulla giornata corrente, e non c'e' un `?date=` da
+        // cui chiedere il resto.
 
         // --- Intraday history for today ---
         if (historyMode) {

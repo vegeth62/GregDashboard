@@ -52,7 +52,9 @@ function readLocalSnapshots(targetDate: string): VolumeSnapshot[] | null {
 export async function GET(request: Request) {
     try {
         const { searchParams } = new URL(request.url);
-        const targetDate = searchParams.get('date') || getTodayKey();
+        // Solo la giornata corrente: le sessioni passate restano nel database
+        // ma non si servono, e non c'e' un parametro per chiederle.
+        const targetDate = getTodayKey();
         const sinceParam = searchParams.get('since');
         const since = isValidTime(sinceParam) ? sinceParam : null;
 
