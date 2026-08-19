@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -12,7 +12,17 @@ const POLLER_SCRIPTS = [
     'execution/tws_volumes_poller.py',
 ];
 
-type Lock = { pids: number[]; startedAt: string };
+/** Un poller vivo scrive sul suo log ogni 10-16 secondi. */
+const HEARTBEAT_MS = 3 * 60 * 1000;
+
+type LockEntry = { pid: number; script: string };
+type Lock = { processes: LockEntry[]; startedAt: string };
+/** Formato vecchio: solo i PID, senza sapere quale script fosse quale. */
+type LegacyLock = { pids: number[]; startedAt: string };
+
+function logFileFor(script: string): string {
+    return path.join(LOG_DIR, `${path.basename(script, '.py')}.log`);
+}
 
 /** Il segnale 0 non viene inviato: serve solo a verificare che il PID esista. */
 function isAlive(pid: number): boolean {
@@ -24,19 +34,110 @@ function isAlive(pid: number): boolean {
     }
 }
 
-function readLock(): Lock | null {
+/**
+ * Riga di comando dei PID indicati, per capire *cosa* siano davvero.
+ * Windows ricicla i PID in fretta: senza questo controllo il lock di ieri
+ * puntava a un PID che oggi era di Chrome, i poller risultavano "gia' attivi"
+ * e non ripartivano piu' (giornata intera senza dati).
+ * Ritorna null se non siamo riusciti a interrogare il sistema.
+ */
+function commandLines(pids: number[]): Map<number, string> | null {
+    if (pids.length === 0) return new Map();
     try {
-        return JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8')) as Lock;
-    } catch {
+        const filter = pids.map((p) => `ProcessId=${p}`).join(' or ');
+        const out =
+            process.platform === 'win32'
+                ? execFileSync(
+                      'powershell',
+                      [
+                          '-NoProfile',
+                          '-NonInteractive',
+                          '-Command',
+                          `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }`,
+                      ],
+                      { encoding: 'utf8', timeout: 15000, windowsHide: true },
+                  )
+                : execFileSync('ps', ['-o', 'pid=,args=', '-p', pids.join(',')], {
+                      encoding: 'utf8',
+                      timeout: 15000,
+                  });
+
+        const map = new Map<number, string>();
+        for (const line of out.split('\n')) {
+            const match = line.trim().match(/^(\d+)[|\s]\s*(.*)$/);
+            if (match) map.set(Number(match[1]), match[2]);
+        }
+        return map;
+    } catch (err: unknown) {
+        // `ps` esce 1 quando nessuno dei PID esiste: non e' un guasto.
+        const status = (err as { status?: number }).status;
+        if (process.platform !== 'win32' && status === 1) return new Map();
         return null;
     }
 }
 
-/** PID registrati nel lock che risultano ancora vivi. */
+function readLock(): LockEntry[] {
+    try {
+        const raw = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8')) as Partial<Lock & LegacyLock>;
+        if (Array.isArray(raw.processes)) {
+            return raw.processes.filter((e) => typeof e?.pid === 'number');
+        }
+        if (Array.isArray(raw.pids)) {
+            return raw.pids.map((pid) => ({ pid, script: '' }));
+        }
+        return [];
+    } catch {
+        return [];
+    }
+}
+
+function writeLock(entries: LockEntry[]): void {
+    const lock: Lock = { processes: entries, startedAt: new Date().toISOString() };
+    fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true });
+    fs.writeFileSync(LOCK_FILE, JSON.stringify(lock, null, 2));
+}
+
+/** Il poller ha scritto sul suo log di recente? Prova indiretta ma affidabile. */
+function heartbeatFresh(script: string): boolean {
+    try {
+        return Date.now() - fs.statSync(logFileFor(script)).mtimeMs < HEARTBEAT_MS;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Poller di cui abbiamo la *prova* che stiano girando: script -> PID.
+ * Un PID vivo non basta, deve essere davvero il nostro processo Python.
+ */
+export function runningPollers(): Map<string, number> {
+    const found = new Map<string, number>();
+    const alive = readLock().filter((e) => isAlive(e.pid));
+    if (alive.length === 0) return found;
+
+    const cmds = commandLines(alive.map((e) => e.pid));
+
+    for (const entry of alive) {
+        if (cmds === null) {
+            // Sistema non interrogabile: ripieghiamo sul battito del log, che
+            // e' comunque piu' solido del semplice "il PID esiste".
+            if (entry.script && heartbeatFresh(entry.script)) found.set(entry.script, entry.pid);
+            continue;
+        }
+        const cmd = cmds.get(entry.pid);
+        if (!cmd) continue;
+        // Lo script vero lo dice la riga di comando: vale anche per i lock
+        // vecchi, che il PID lo registravano senza dire a chi appartenesse.
+        const script = POLLER_SCRIPTS.find((s) => cmd.includes(path.basename(s)));
+        if (script) found.set(script, entry.pid);
+    }
+
+    return found;
+}
+
+/** PID registrati nel lock che risultano ancora vivi *e* nostri. */
 export function runningPollerPids(): number[] {
-    const lock = readLock();
-    if (!Array.isArray(lock?.pids)) return [];
-    return lock.pids.filter(isAlive);
+    return [...runningPollers().values()];
 }
 
 export type StartResult = {
@@ -45,55 +146,65 @@ export type StartResult = {
     message: string;
 };
 
+function spawnPoller(script: string): number | null {
+    // Senza questo l'output finiva in 'ignore': un push su Supabase che
+    // falliva restava invisibile per mesi. Ora ogni poller ha il suo log.
+    const fd = fs.openSync(logFileFor(script), 'a');
+    fs.writeSync(fd, `\n=== avvio ${new Date().toISOString()} ===\n`);
+
+    // `-u` disattiva il buffering di Python, altrimenti il log resta
+    // vuoto finche' il buffer non si riempie.
+    const child = spawn('python', ['-u', script], {
+        cwd: ROOT_DIR,
+        detached: true,
+        stdio: ['ignore', fd, fd],
+    });
+    // spawn non lancia in modo sincrono se `python` non e' nel PATH.
+    child.on('error', (err) => {
+        console.error(`[pollers] impossibile avviare ${script}:`, err.message);
+    });
+    child.unref();
+    // Il figlio ha la sua copia del descrittore: qui possiamo chiuderlo.
+    fs.closeSync(fd);
+    return child.pid ?? null;
+}
+
 /**
- * Avvia i due poller come processi detached.
- * Senza `force`, non fa nulla se il lock indica poller già vivi: evita
- * duplicati a ogni restart del dev server (che riesegue instrumentation).
+ * Avvia i poller mancanti come processi detached.
+ * Senza `force` riavvia solo quelli che non risultano vivi: niente duplicati a
+ * ogni restart del dev server, ma se ne muore uno solo (TWS che cade) quello
+ * riparte senza aspettare che muoiano entrambi.
  */
 export function startPollers({ force = false } = {}): StartResult {
-    const alive = runningPollerPids();
-    if (alive.length > 0 && !force) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+
+    const running = force ? new Map<string, number>() : runningPollers();
+    const toStart = POLLER_SCRIPTS.filter((s) => !running.has(s));
+
+    if (toStart.length === 0) {
+        const pids = [...running.values()];
         return {
             started: false,
-            pids: alive,
-            message: `Poller già attivi (PID ${alive.join(', ')})`,
+            pids,
+            message: `Poller gia' attivi (PID ${pids.join(', ')})`,
         };
     }
 
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-
-    const pids: number[] = [];
-    for (const script of POLLER_SCRIPTS) {
-        // Senza questo l'output finiva in 'ignore': un push su Supabase che
-        // falliva restava invisibile per mesi. Ora ogni poller ha il suo log.
-        const logFile = path.join(LOG_DIR, `${path.basename(script, '.py')}.log`);
-        const fd = fs.openSync(logFile, 'a');
-        fs.writeSync(fd, `\n=== avvio ${new Date().toISOString()} ===\n`);
-
-        // `-u` disattiva il buffering di Python, altrimenti il log resta
-        // vuoto finche' il buffer non si riempie.
-        const child = spawn('python', ['-u', script], {
-            cwd: ROOT_DIR,
-            detached: true,
-            stdio: ['ignore', fd, fd],
-        });
-        // spawn non lancia in modo sincrono se `python` non è nel PATH.
-        child.on('error', (err) => {
-            console.error(`[pollers] impossibile avviare ${script}:`, err.message);
-        });
-        child.unref();
-        // Il figlio ha la sua copia del descrittore: qui possiamo chiuderlo.
-        fs.closeSync(fd);
-        if (child.pid) pids.push(child.pid);
+    const entries: LockEntry[] = [...running.entries()].map(([script, pid]) => ({ pid, script }));
+    const avviati: string[] = [];
+    for (const script of toStart) {
+        const pid = spawnPoller(script);
+        if (pid) {
+            entries.push({ pid, script });
+            avviati.push(`${path.basename(script)} (PID ${pid})`);
+        }
     }
 
-    const lock: Lock = { pids, startedAt: new Date().toISOString() };
-    fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true });
-    fs.writeFileSync(LOCK_FILE, JSON.stringify(lock, null, 2));
+    writeLock(entries);
 
     return {
-        started: true,
-        pids,
-        message: `Poller avviati (PID ${pids.join(', ')}) - log in .tmp/poller-logs/`,
+        started: avviati.length > 0,
+        pids: entries.map((e) => e.pid),
+        message: `Poller avviati: ${avviati.join(', ')} - log in .tmp/poller-logs/`,
     };
 }
