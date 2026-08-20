@@ -569,10 +569,6 @@ export default function GexPage() {
      * plugin non registrerebbe da dove si era partiti e il tasto "Reset
      * zoom" resterebbe senza niente a cui tornare.
      */
-    const suScala = (sc: { left: number; right: number; top: number; bottom: number } | undefined,
-                     px: number, py: number) =>
-      !!sc && px >= sc.left && px <= sc.right && py >= sc.top && py <= sc.bottom;
-
     const onWheel = (e: WheelEvent) => {
       const rect = canvas.getBoundingClientRect();
       const px = e.clientX - rect.left;
@@ -580,30 +576,34 @@ export default function GexPage() {
       // Su = si stringe, giu' = si allarga.
       const fattore = e.deltaY < 0 ? 0.85 : 1.18;
 
-      const zooma = (id: 'xTime' | 'y', pixel: number) => {
-        const sc = chart.scales[id];
-        if (!sc) return;
+      const zooma = (sc: (typeof chart.scales)[string], pixel: number) => {
         const perno = sc.getValueForPixel(pixel);
         if (perno == null || !isFinite(perno)) return;
-        chart.zoomScale(id, {
+        chart.zoomScale(sc.id, {
           min: perno - (perno - sc.min) * fattore,
           max: perno + (sc.max - perno) * fattore,
         }, 'none');
       };
 
+      // Gli assi non si cercano per nome: si prende quello sotto al
+      // puntatore, qualunque sia. Le scale qui sono tre e cambiano con la
+      // vista (xGex esiste solo in "Profile Bars"), quindi nominarle a mano
+      // vuol dire sbagliare appena la vista cambia.
+      const asse = Object.values(chart.scales).find(
+        (sc) => px >= sc.left && px <= sc.right && py >= sc.top && py <= sc.bottom,
+      );
+
       const area = chart.chartArea;
       const dentro = !!area && px >= area.left && px <= area.right && py >= area.top && py <= area.bottom;
 
-      if (suScala(chart.scales.xTime, px, py)) {
-        zooma('xTime', px);
-      } else if (suScala(chart.scales.y, px, py)) {
-        zooma('y', py);
+      if (asse) {
+        zooma(asse, asse.isHorizontal() ? px : py);
       } else if (dentro) {
-        zooma('xTime', px);
-        zooma('y', py);
+        // Dentro il grafico si muovono insieme, come prima.
+        for (const sc of Object.values(chart.scales)) {
+          zooma(sc, sc.isHorizontal() ? px : py);
+        }
       } else {
-        // Sopra l'asse del GEX in alto, o fuori dal grafico: la pagina
-        // scorre come sempre.
         return;
       }
 
