@@ -106,6 +106,12 @@ const SOGLIA_BOLLA_M: Record<'volume' | 'oi', number> = { volume: 25, oi: 1.5 };
  */
 const RIFERIMENTO_BOLLA_M: Record<'volume' | 'oi', number> = { volume: 1000, oi: 50 };
 
+/**
+ * Sotto questa quota di fondo scala una riga non si disegna. Vale su entrambe
+ * le basi, perche' e' una frazione del metro e non un valore in M$.
+ */
+const SOGLIA_RIGA = 0.18;
+
 function getESTNowStr(): string {
   const localDate = new Date();
   // CET is 6 hours ahead of EST/EDT
@@ -307,14 +313,6 @@ export default function GexPage() {
     return { min: Math.floor(min - padding), max: Math.ceil(max + padding) };
   }, [gexProfile, spxHistory, refLines, refLineVisibility, currentBasis]);
 
-  // Serve solo a decidere QUALI righe disegnare: i livelli sotto il 10% del
-  // piu' grande del momento sono rumore e si tolgono di mezzo. Quanto marcata
-  // vada disegnata una riga e' un'altra domanda, e la risposta e' scalaDisegno.
-  const maxGexVal = useMemo(() => {
-    if (gexProfile.length === 0) return 1;
-    return Math.max(...gexProfile.map((p) => Math.abs(p.gex)));
-  }, [gexProfile]);
-
   const fondoScala = useRef({ ...FONDO_SCALA_M });
 
   /**
@@ -369,15 +367,18 @@ export default function GexPage() {
 
     // 2. Horizontal GEX strike lines
     gexProfile.forEach((p, idx) => {
-      // Quali righe: rispetto al piu' grande del momento, per non riempire il
-      // grafico di livelli che non contano.
-      if (Math.abs(p.gex) / maxGexVal < 0.10) return;
-
-      // Come disegnarle: rispetto al metro fermo, cosi' un livello che cresce
-      // si ingrossa e si accende davvero. La radice tiene visibili i livelli
-      // piccoli senza appiattire i grandi l'uno sull'altro, che con un
+      // Quanto marcata va disegnata: rispetto al metro fermo, cosi' un livello
+      // che cresce si ingrossa e si accende davvero. La radice tiene visibili i
+      // livelli piccoli senza appiattire i grandi l'uno sull'altro, che con un
       // rapporto lineare finivano tutti a ridosso del fondo scala.
       const q = Math.min(1, Math.sqrt(Math.abs(p.gex) / scalaDisegno));
+
+      // E quali disegnare: sempre col metro fermo, non piu' rispetto al piu'
+      // grande del momento. Con la soglia relativa, una giornata con un muro
+      // dominante ne lasciava passare sei -- tutte oltre i 10px, tutte uguali
+      // a vedersi. Cosi' invece ne restano una dozzina e vanno dai 4px ai 15,
+      // che e' il punto: il confronto si fa fra righe diverse fra loro.
+      if (q < SOGLIA_RIGA) return;
       const borderWidth = 1.5 + q * 14;
       const opacity = 0.18 + q * 0.77;
       const borderColor = p.gex > 0
@@ -421,7 +422,7 @@ export default function GexPage() {
     });
 
     return annotations;
-  }, [gexProfile, maxGexVal, scalaDisegno, viewMode, spxHistory, lineDate, refLines, refLineVisibility, currentBasis]);
+  }, [gexProfile, scalaDisegno, viewMode, spxHistory, lineDate, refLines, refLineVisibility, currentBasis]);
 
   // ─── Build datasets helper ───
   const buildDatasets = useCallback((currentGexData: GexPoint[], currentSpxHistory: SpxHistoryPoint[], currentGexProfile: { strike: number; gex: number }[]) => {
