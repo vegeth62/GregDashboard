@@ -199,7 +199,12 @@ function elaboraSnapshot(
     // ma solo sulla coda utile: dieci minuti a uno snapshot ogni dieci secondi
     // sono una sessantina di copie, non le migliaia di tutta la giornata.
     const ultimoSec = snapshots.length > 0 ? toSeconds(snapshots[snapshots.length - 1].time) : 0;
-    const inizioCoda = ultimoSec - Math.max(...MINUTI_STORICO) * 60;
+    // Un minuto di margine oltre il piu' lontano dei traguardi. Senza, la coda
+    // cominciava esattamente sul traguardo dei 10 minuti e lo snapshot "non
+    // oltre 10 minuti fa" -- che sta qualche secondo PRIMA di quel punto,
+    // visto che ne arriva uno ogni dieci secondi -- restava fuori: la voce dei
+    // 10 minuti non veniva quasi mai fuori, e i pallini erano due invece di tre.
+    const inizioCoda = ultimoSec - Math.max(...MINUTI_STORICO) * 60 - 60;
     const coda: { sec: number; time: string; rows: ProfileRow[] }[] = [];
 
     for (const snap of snapshots) {

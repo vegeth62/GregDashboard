@@ -64,6 +64,26 @@ interface SpxHistoryPoint {
  */
 const MAX_PUNTI = 8000;
 
+/**
+ * Fondo scala del disegno, in M$: il livello a cui una riga e' spessa e piena
+ * quanto puo' essere.
+ *
+ * Non si ricava dallo snapshot corrente, ed e' il punto della faccenda. Prima
+ * spessore e opacita' venivano da |gex| diviso il massimo del profilo di quel
+ * momento: il livello piu' grande aveva percio' rapporto 1 dal primo minuto
+ * della sessione e restava disegnato al massimo per tutto il pomeriggio,
+ * quanto che crescesse; e quando crescevano tutti insieme, numeratore e
+ * denominatore si muovevano insieme e non cambiava niente per nessuno. Con un
+ * metro fermo, invece, un muro che raddoppia si vede raddoppiare.
+ *
+ * Le due basi non stanno sulla stessa scala -- su 0DTE il volume di giornata
+ * vale una ventina di volte l'open interest -- quindi il fondo scala e' suo
+ * per ciascuna. Sono numeri di comodo, tarati su quello che si vede a fine
+ * sessione: se un giorno i livelli li superano, il metro si allunga da solo
+ * (e non si accorcia piu' fino a domani), cosi' niente esce dal grafico.
+ */
+const FONDO_SCALA_M: Record<'volume' | 'oi', number> = { volume: 150000, oi: 10000 };
+
 function getESTNowStr(): string {
   const localDate = new Date();
   // CET is 6 hours ahead of EST/EDT
@@ -148,6 +168,9 @@ export default function GexPage() {
           lastGexTime.current = null;
           setGexData([]);
           setProfile([]);
+          // Il metro non si eredita dal giorno prima: torna al nominale e
+          // ricomincia a crescere con la sessione nuova.
+          fondoScala.current = { ...FONDO_SCALA_M };
           return;
         }
         if (json.date) giornoSessione.current = json.date;
@@ -262,10 +285,28 @@ export default function GexPage() {
     return { min: Math.floor(min - padding), max: Math.ceil(max + padding) };
   }, [gexProfile, spxHistory, refLines, refLineVisibility, currentBasis]);
 
+  // Serve solo a decidere QUALI righe disegnare: i livelli sotto il 10% del
+  // piu' grande del momento sono rumore e si tolgono di mezzo. Quanto marcata
+  // vada disegnata una riga e' un'altra domanda, e la risposta e' scalaDisegno.
   const maxGexVal = useMemo(() => {
     if (gexProfile.length === 0) return 1;
     return Math.max(...gexProfile.map((p) => Math.abs(p.gex)));
   }, [gexProfile]);
+
+  const fondoScala = useRef({ ...FONDO_SCALA_M });
+
+  /**
+   * Il metro con cui si disegna: assoluto, e per tutta la sessione non
+   * torna mai indietro. Se si accorciasse quando i livelli calano, la stessa
+   * quantita' di gamma verrebbe disegnata in due modi diversi a due ore di
+   * distanza, che e' il difetto da cui siamo partiti.
+   */
+  const scalaDisegno = useMemo(() => {
+    const massimo = gexProfile.reduce((m, p) => Math.max(m, Math.abs(p.gex)), 0);
+    const aggiornato = Math.max(fondoScala.current[gexBasis], massimo);
+    fondoScala.current[gexBasis] = aggiornato;
+    return aggiornato;
+  }, [gexProfile, gexBasis]);
 
   const lineDate = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
@@ -306,24 +347,20 @@ export default function GexPage() {
 
     // 2. Horizontal GEX strike lines
     gexProfile.forEach((p, idx) => {
-      const ratio = Math.abs(p.gex) / maxGexVal;
-      // Only draw major levels to declutter like Bookmap (e.g. > 10% of max)
-      if (ratio < 0.10) return;
+      // Quali righe: rispetto al piu' grande del momento, per non riempire il
+      // grafico di livelli che non contano.
+      if (Math.abs(p.gex) / maxGexVal < 0.10) return;
 
-      const importanceRatio = ratio;
-      // Much thicker lines for major levels
-      const borderWidth = 3 + importanceRatio * 12.0;
-      let borderColor: string;
-      
-      if (p.gex > 0) {
-        // Bright green/teal for positive GEX levels
-        const opacity = Math.min(0.95, Math.max(0.4, importanceRatio));
-        borderColor = `rgba(34, 197, 94, ${opacity})`;
-      } else {
-        // Bright red/orange for negative GEX levels
-        const opacity = Math.min(0.95, Math.max(0.4, importanceRatio));
-        borderColor = `rgba(239, 68, 68, ${opacity})`;
-      }
+      // Come disegnarle: rispetto al metro fermo, cosi' un livello che cresce
+      // si ingrossa e si accende davvero. La radice tiene visibili i livelli
+      // piccoli senza appiattire i grandi l'uno sull'altro, che con un
+      // rapporto lineare finivano tutti a ridosso del fondo scala.
+      const q = Math.min(1, Math.sqrt(Math.abs(p.gex) / scalaDisegno));
+      const borderWidth = 1.5 + q * 14;
+      const opacity = 0.18 + q * 0.77;
+      const borderColor = p.gex > 0
+        ? `rgba(34, 197, 94, ${opacity})`
+        : `rgba(239, 68, 68, ${opacity})`;
       annotations[`gex-line-${idx}`] = { type: 'line', yMin: p.strike, yMax: p.strike, borderColor, borderWidth, label: { display: false } };
     });
 
@@ -362,7 +399,7 @@ export default function GexPage() {
     });
 
     return annotations;
-  }, [gexProfile, maxGexVal, viewMode, spxHistory, lineDate, refLines, refLineVisibility, currentBasis]);
+  }, [gexProfile, maxGexVal, scalaDisegno, viewMode, spxHistory, lineDate, refLines, refLineVisibility, currentBasis]);
 
   // ─── Build datasets helper ───
   const buildDatasets = useCallback((currentGexData: GexPoint[], currentSpxHistory: SpxHistoryPoint[], currentGexProfile: { strike: number; gex: number }[]) => {
@@ -437,20 +474,30 @@ export default function GexPage() {
 
     if (viewMode === 'lines') return [priceDataset, blueDotsDataset, purpleDotsDataset];
 
+    // Il divisore era 15, con i valori in M$: sopra i 15 M$ -- cioe' sempre,
+    // visto che a fine sessione uno strike ATM ne fa decine di migliaia -- il
+    // conto sbatteva contro il tetto e ogni barra usciva della stessa identica
+    // opacita'. Il colore non diceva piu' niente e restava solo la lunghezza.
+    // Adesso e' lo stesso metro delle righe orizzontali.
+    const intensita = (ctx: { raw?: { x?: number } }, minimo: number, massimo: number) => {
+      const q = Math.min(1, Math.sqrt(Math.abs(ctx.raw?.x || 0) / fondoScala.current[gexBasis]));
+      return minimo + q * (massimo - minimo);
+    };
+
     const posGexDataset = {
       type: 'bar' as const, label: 'Positive GEX (M$/1%)',
       data: currentGexProfile.map((p) => ({ x: p.gex > 0 ? p.gex : 0, y: p.strike })),
       xAxisID: 'xGex', yAxisID: 'y',
-      backgroundColor: (ctx: any) => `rgba(34, 197, 94, ${Math.min(0.55, Math.max(0.12, (ctx.raw?.x || 0) / 15))})`,
-      borderColor: (ctx: any) => `rgba(74, 222, 128, ${Math.min(0.7, Math.max(0.2, (ctx.raw?.x || 0) / 15))})`,
+      backgroundColor: (ctx: any) => `rgba(34, 197, 94, ${intensita(ctx, 0.12, 0.75)})`,
+      borderColor: (ctx: any) => `rgba(74, 222, 128, ${intensita(ctx, 0.2, 0.95)})`,
       borderWidth: 1, barThickness: 8, indexAxis: 'y' as const,
     };
     const negGexDataset = {
       type: 'bar' as const, label: 'Negative GEX (M$/1%)',
       data: currentGexProfile.map((p) => ({ x: p.gex < 0 ? Math.abs(p.gex) : 0, y: p.strike })),
       xAxisID: 'xGex', yAxisID: 'y',
-      backgroundColor: (ctx: any) => `rgba(239, 68, 68, ${Math.min(0.55, Math.max(0.12, (ctx.raw?.x || 0) / 15))})`,
-      borderColor: (ctx: any) => `rgba(248, 113, 113, ${Math.min(0.7, Math.max(0.2, (ctx.raw?.x || 0) / 15))})`,
+      backgroundColor: (ctx: any) => `rgba(239, 68, 68, ${intensita(ctx, 0.12, 0.75)})`,
+      borderColor: (ctx: any) => `rgba(248, 113, 113, ${intensita(ctx, 0.2, 0.95)})`,
       borderWidth: 1, barThickness: 8, indexAxis: 'y' as const,
     };
     return [priceDataset, posGexDataset, negGexDataset];
