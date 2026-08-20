@@ -539,6 +539,12 @@ export default function GexPage() {
           zoom: {
             zoom: {
               wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' as const,
+              // Rotella sopra un asse: si muove solo quell'asse. Sul tempo
+              // allarga o stringe la finestra senza toccare gli strike, che
+              // e' il gesto che serve per seguire il flusso -- dentro l'area
+              // del grafico resta lo zoom su entrambi. Stessa convenzione
+              // della rotella sull'asse X di /market.
+              scaleMode: 'xy' as const,
               onZoom: () => { isUserZoomedRef.current = true; setIsZoomed(true); },
             },
             pan: {
