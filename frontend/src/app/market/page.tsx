@@ -867,7 +867,22 @@ export default function MarketPage() {
 
                 const q = (v: unknown) => (typeof v === 'number' && isFinite(v) && v > 0 ? v.toFixed(2) : '');
 
-                if (hours === 10 && minutes === 35) {
+                // Non piu' il minuto esatto. Bastava un giro di poll saltato --
+                // una scheda in secondo piano, che il browser rallenta e dopo
+                // qualche minuto congela -- perche' le 10:35 passassero senza
+                // che nessuno guardasse, e il pannello restava vuoto per tutto
+                // il giorno: il backfill dallo storico gira una volta sola, al
+                // caricamento della pagina, quindi chi aveva la dashboard gia'
+                // aperta prima delle 10:35 non veniva coperto da nessuno dei
+                // due. La finestra e' la stessa mezz'ora di tolleranza del
+                // backfill, e riempiVuoti fa si' che a scrivere sia comunque
+                // solo il primo giro utile.
+                const minutiOra = hours * 60 + minutes;
+                const FINESTRA = 30;
+                const MATTINA = 10 * 60 + 35;
+                const POMERIGGIO = 15 * 60 + 35;
+
+                if (minutiOra >= MATTINA && minutiOra <= MATTINA + FINESTRA) {
                     // Straddle dalla chain ES: alle 10:35 CET sono le 04:35 a
                     // New York e le SPX quotano in Global Trading Hours con
                     // spread larghi, mentre le ES 0DTE sono piene su CME.
@@ -876,7 +891,7 @@ export default function MarketPage() {
                         callBid: q(data.esCallBid), callAsk: q(data.esCallAsk),
                         putBid: q(data.esPutBid), putAsk: q(data.esPutAsk),
                     }));
-                } else if (hours === 15 && minutes === 35) {
+                } else if (minutiOra >= POMERIGGIO && minutiOra <= POMERIGGIO + FINESTRA) {
                     // A mercato aperto lo straddle torna sulla chain SPX.
                     setRangeCalcOb(prev => riempiVuoti(prev, {
                         es: esfStr, spx: spxStr,
