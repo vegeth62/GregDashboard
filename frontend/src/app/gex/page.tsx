@@ -84,6 +84,28 @@ const MAX_PUNTI = 8000;
  */
 const FONDO_SCALA_M: Record<'volume' | 'oi', number> = { volume: 150000, oi: 10000 };
 
+/**
+ * Bolle del flusso: sotto questa taglia non si disegnano, in M$.
+ *
+ * La soglia era il 10% dell'evento piu' grosso della giornata, e con una
+ * distribuzione a coda lunga come questa -- mediana 3 M$, massimo 3.363 --
+ * voleva dire buttare via il 98% del flusso per colpa di un singolo scambio
+ * fuori misura. Una soglia fissa non dipende dagli estremi: taglia il rumore
+ * e lascia in piedi tutto quello che e' successo davvero.
+ */
+const SOGLIA_BOLLA_M: Record<'volume' | 'oi', number> = { volume: 25, oi: 1.5 };
+
+/**
+ * Taglia dell'evento che merita la bolla piu' grande, in M$.
+ *
+ * Anche qui il riferimento era il massimo di giornata, con il raggio lineare
+ * sopra: le poche bolle sopravvissute alla soglia finivano tutte a ridosso del
+ * minimo -- 138 su 156 fra i 5 e i 6 pixel -- e una sola, l'evento record,
+ * grande. Con un riferimento fisso e la radice, la taglia della bolla torna a
+ * dire quanto e' stato aggiunto o tolto.
+ */
+const RIFERIMENTO_BOLLA_M: Record<'volume' | 'oi', number> = { volume: 1000, oi: 50 };
+
 function getESTNowStr(): string {
   const localDate = new Date();
   // CET is 6 hours ahead of EST/EDT
@@ -432,43 +454,29 @@ export default function GexPage() {
       })
       .filter((pt) => !isNaN(pt.x.getTime()) && pt.gex !== 0);
 
-    const maxSingleEvent = scatterPoints.reduce((max, p) => Math.max(max, Math.abs(p.gex)), 0);
-    const threshold = maxSingleEvent * 0.10; // Lower threshold to show more granular addition/subtraction data
+    const soglia = SOGLIA_BOLLA_M[gexBasis];
+    // Quanto pesa questo singolo evento, da 0 a 1, sul riferimento fisso.
+    const quota = (ctx: { raw?: { gex?: number } }) =>
+      Math.min(1, Math.sqrt(Math.abs(ctx.raw?.gex || 0) / RIFERIMENTO_BOLLA_M[gexBasis]));
 
     const blueDotsDataset = {
       type: 'scatter' as const, label: 'GEX+ (Addition)',
-      data: scatterPoints.filter((p) => p.gex > 0 && p.gex >= threshold),
-      xAxisID: 'xTime', yAxisID: 'y', 
-      backgroundColor: (ctx: any) => {
-        const val = ctx.raw?.gex || 0;
-        const ratio = Math.min(1, val / maxSingleEvent);
-        return `rgba(59, 130, 246, ${0.4 + 0.6 * ratio})`; // Dynamic opacity blue
-      },
-      borderColor: 'rgba(96, 165, 250, 0.8)', 
-      borderWidth: 1, 
-      pointRadius: (ctx: any) => {
-        const val = ctx.raw?.gex || 0;
-        const ratio = Math.min(1, val / maxSingleEvent);
-        return 3 + ratio * 15; // Dynamic bubble size (3 to 18)
-      }, 
+      data: scatterPoints.filter((p) => p.gex >= soglia),
+      xAxisID: 'xTime', yAxisID: 'y',
+      backgroundColor: (ctx: any) => `rgba(59, 130, 246, ${0.35 + 0.6 * quota(ctx)})`,
+      borderColor: 'rgba(96, 165, 250, 0.8)',
+      borderWidth: 1,
+      pointRadius: (ctx: any) => 2 + quota(ctx) * 14,
       pointHoverRadius: 10,
     };
     const purpleDotsDataset = {
       type: 'scatter' as const, label: 'GEX- (Subtraction)',
-      data: scatterPoints.filter((p) => p.gex < 0 && Math.abs(p.gex) >= threshold),
-      xAxisID: 'xTime', yAxisID: 'y', 
-      backgroundColor: (ctx: any) => {
-        const val = Math.abs(ctx.raw?.gex || 0);
-        const ratio = Math.min(1, val / maxSingleEvent);
-        return `rgba(217, 70, 239, ${0.4 + 0.6 * ratio})`; // Dynamic opacity purple/fuchsia
-      },
-      borderColor: 'rgba(232, 121, 249, 0.8)', 
-      borderWidth: 1, 
-      pointRadius: (ctx: any) => {
-        const val = Math.abs(ctx.raw?.gex || 0);
-        const ratio = Math.min(1, val / maxSingleEvent);
-        return 3 + ratio * 15; // Dynamic bubble size (3 to 18)
-      }, 
+      data: scatterPoints.filter((p) => -p.gex >= soglia),
+      xAxisID: 'xTime', yAxisID: 'y',
+      backgroundColor: (ctx: any) => `rgba(217, 70, 239, ${0.35 + 0.6 * quota(ctx)})`,
+      borderColor: 'rgba(232, 121, 249, 0.8)',
+      borderWidth: 1,
+      pointRadius: (ctx: any) => 2 + quota(ctx) * 14,
       pointHoverRadius: 10,
     };
 
