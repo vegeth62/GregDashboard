@@ -33,16 +33,6 @@ ChartJS.register(
   Tooltip, TimeScale, Legend
 );
 
-/** Flusso nuovo fra due snapshot: quanto e' stato scambiato in quei secondi. */
-interface GexPoint {
-  time: string;
-  strike: number;
-  /** Dai contratti scambiati fra i due snapshot. */
-  gex: number;
-  /** Dalla variazione di open interest, intraday quasi sempre zero. */
-  gexOi: number;
-}
-
 /** Totale di giornata per strike, gia' cumulato dal server. */
 interface ProfileRow {
   strike: number;
@@ -68,13 +58,6 @@ interface SpxHistoryPoint {
 }
 
 /**
- * Tetto ai punti di flusso tenuti in memoria. Sono bolle su un asse dei
- * tempi: oltre questo numero si sovrappongono comunque, e l'unico effetto di
- * tenerne di piu' e' far rallentare il ridisegno a ogni aggiornamento.
- */
-const MAX_PUNTI = 8000;
-
-/**
  * Fondo scala del disegno, in M$: il livello a cui una riga e' spessa e piena
  * quanto puo' essere.
  *
@@ -93,28 +76,6 @@ const MAX_PUNTI = 8000;
  * (e non si accorcia piu' fino a domani), cosi' niente esce dal grafico.
  */
 const FONDO_SCALA_M: Record<'volume' | 'oi', number> = { volume: 150000, oi: 10000 };
-
-/**
- * Bolle del flusso: sotto questa taglia non si disegnano, in M$.
- *
- * La soglia era il 10% dell'evento piu' grosso della giornata, e con una
- * distribuzione a coda lunga come questa -- mediana 3 M$, massimo 3.363 --
- * voleva dire buttare via il 98% del flusso per colpa di un singolo scambio
- * fuori misura. Una soglia fissa non dipende dagli estremi: taglia il rumore
- * e lascia in piedi tutto quello che e' successo davvero.
- */
-const SOGLIA_BOLLA_M: Record<'volume' | 'oi', number> = { volume: 25, oi: 1.5 };
-
-/**
- * Taglia dell'evento che merita la bolla piu' grande, in M$.
- *
- * Anche qui il riferimento era il massimo di giornata, con il raggio lineare
- * sopra: le poche bolle sopravvissute alla soglia finivano tutte a ridosso del
- * minimo -- 138 su 156 fra i 5 e i 6 pixel -- e una sola, l'evento record,
- * grande. Con un riferimento fisso e la radice, la taglia della bolla torna a
- * dire quanto e' stato aggiunto o tolto.
- */
-const RIFERIMENTO_BOLLA_M: Record<'volume' | 'oi', number> = { volume: 1000, oi: 50 };
 
 /**
  * Sotto questa quota di fondo scala una riga non si disegna. Vale su entrambe
@@ -142,7 +103,6 @@ function getESTNowStr(): string {
 }
 
 export default function GexPage() {
-  const [gexData, setGexData] = useState<GexPoint[]>([]);
   const [profile, setProfile] = useState<ProfileRow[]>([]);
   // La storia del profilo: com'era il muro su ogni strike, istante per
   // istante. E' quello che una riga orizzontale non puo' dire, perche' ne
@@ -180,7 +140,6 @@ export default function GexPage() {
   const chartRef = useRef<ChartJS | null>(null);
   const isUserZoomedRef = useRef(false);
   const prevLineDateRef = useRef<number>(0);
-  const latestGexData = useRef<GexPoint[]>([]);
   const latestSpxHistory = useRef<SpxHistoryPoint[]>([]);
   const latestSerie = useRef<SerieFrame[]>([]);
   const latestStrikes = useRef<number[]>([]);
@@ -192,7 +151,6 @@ export default function GexPage() {
     return () => clearInterval(timer);
   }, []);
 
-  latestGexData.current = gexData;
   latestSpxHistory.current = spxHistory;
   latestSerie.current = serie;
   latestStrikes.current = strikesSerie;
@@ -212,10 +170,14 @@ export default function GexPage() {
   useEffect(() => {
     const fetchGexData = async () => {
       try {
-        // Ogni snapshot vale ~37 punti: senza `since` si riscaricherebbe
-        // l'intera giornata a ogni giro.
+        // `flow=0`: le bolle del flusso non si disegnano piu', e quelle
+        // bolle erano l'unica cosa che usasse `points`. Erano il 95% della
+        // risposta -- mezzo megabyte a fine sessione -- per dati che ora
+        // nessuno guarda.
         const since = lastGexTime.current;
-        const res = await fetch(since ? `/api/gex?since=${encodeURIComponent(since)}` : '/api/gex', { cache: 'no-store' });
+        const q = new URLSearchParams({ flow: '0' });
+        if (since) q.set('since', since);
+        const res = await fetch(`/api/gex?${q}`, { cache: 'no-store' });
         if (!res.ok) {
           const body = await res.json().catch(() => null);
           throw new Error(body?.error || 'Failed to load GEX data');
@@ -228,7 +190,6 @@ export default function GexPage() {
         if (json.date && giornoSessione.current && json.date !== giornoSessione.current) {
           giornoSessione.current = json.date;
           lastGexTime.current = null;
-          setGexData([]);
           setProfile([]);
           setSerie([]);
           setStrikesSerie([]);
@@ -270,18 +231,9 @@ export default function GexPage() {
           }
         }
 
-        const incoming: GexPoint[] = json.points ?? [];
-        // Il profilo e' gia' il totale di giornata: si sostituisce, non si
-        // somma. I punti sono flusso, quelli si accodano -- ma solo entro la
-        // finestra che il grafico puo' mostrare, altrimenti a fine sessione
-        // ci si ritrova a ridisegnare decine di migliaia di bolle.
+        // Il profilo e' gia' il totale di giornata: si sostituisce, non si somma.
         const nuovoProfilo: ProfileRow[] = json.profile ?? [];
         if (nuovoProfilo.length > 0) setProfile(nuovoProfilo);
-        if (since) {
-          if (incoming.length > 0) setGexData((prev) => [...prev, ...incoming].slice(-MAX_PUNTI));
-        } else {
-          setGexData(incoming.slice(-MAX_PUNTI));
-        }
         setError(null);
       } catch (e: any) {
         setError(e.message || 'Error');
@@ -319,11 +271,6 @@ export default function GexPage() {
   }, []);
 
   // ─── Derived data ───
-  const filteredGexData = useMemo(() => {
-    const now = getESTNowStr();
-    return gexData.filter((d) => d.time <= now);
-  }, [gexData]);
-
   // `latestDataTime` stava qui: calcolato a ogni aggiornamento e mai letto da
   // nessuno. Non era solo peso morto -- faceva `Math.max(...punti)`, e lo
   // spread passa un argomento per elemento: oltre qualche decina di migliaia
@@ -497,7 +444,7 @@ export default function GexPage() {
   }, [gexProfile, scalaDisegno, quotaMuro, viewMode, spxHistory, lineDate, refLines, refLineVisibility, currentBasis]);
 
   // ─── Build datasets helper ───
-  const buildDatasets = useCallback((currentGexData: GexPoint[], currentSpxHistory: SpxHistoryPoint[], currentGexProfile: { strike: number; gex: number }[]) => {
+  const buildDatasets = useCallback((currentSpxHistory: SpxHistoryPoint[], currentGexProfile: { strike: number; gex: number }[]) => {
     const todayStr = new Date().toISOString().slice(0, 10);
     const now = getESTNowStr();
 
@@ -514,43 +461,6 @@ export default function GexPage() {
       xAxisID: 'xTime', yAxisID: 'y', borderColor: '#00f0ff',
       borderWidth: 2.5, pointRadius: 0, fill: false, tension: 0.1,
       showLine: true,
-    };
-
-    const scatterPoints = currentGexData
-      .filter(d => d.time <= now)
-      .map((d) => {
-        const t = d.time.includes(':') ? d.time : `${d.time}:00`;
-        // Le bolle seguono il selettore come le barre: in modalita' open
-        // interest sono quasi sempre vuote, ed e' corretto -- l'OI e' fermo
-        // al closing del giorno prima e intraday non si muove.
-        return { x: new Date(`${todayStr}T${t}`), y: d.strike, gex: gexBasis === 'oi' ? d.gexOi : d.gex };
-      })
-      .filter((pt) => !isNaN(pt.x.getTime()) && pt.gex !== 0);
-
-    const soglia = SOGLIA_BOLLA_M[gexBasis];
-    // Quanto pesa questo singolo evento, da 0 a 1, sul riferimento fisso.
-    const quota = (ctx: { raw?: { gex?: number } }) =>
-      Math.min(1, Math.sqrt(Math.abs(ctx.raw?.gex || 0) / RIFERIMENTO_BOLLA_M[gexBasis]));
-
-    const blueDotsDataset = {
-      type: 'scatter' as const, label: 'GEX+ (Addition)',
-      data: scatterPoints.filter((p) => p.gex >= soglia),
-      xAxisID: 'xTime', yAxisID: 'y',
-      backgroundColor: (ctx: any) => `rgba(59, 130, 246, ${0.35 + 0.6 * quota(ctx)})`,
-      borderColor: 'rgba(96, 165, 250, 0.8)',
-      borderWidth: 1,
-      pointRadius: (ctx: any) => 2 + quota(ctx) * 14,
-      pointHoverRadius: 10,
-    };
-    const purpleDotsDataset = {
-      type: 'scatter' as const, label: 'GEX- (Subtraction)',
-      data: scatterPoints.filter((p) => -p.gex >= soglia),
-      xAxisID: 'xTime', yAxisID: 'y',
-      backgroundColor: (ctx: any) => `rgba(217, 70, 239, ${0.35 + 0.6 * quota(ctx)})`,
-      borderColor: 'rgba(232, 121, 249, 0.8)',
-      borderWidth: 1,
-      pointRadius: (ctx: any) => 2 + quota(ctx) * 14,
-      pointHoverRadius: 10,
     };
 
     if (viewMode === 'lines') {
@@ -577,7 +487,7 @@ export default function GexPage() {
         type: 'scatter' as const, label: 'Muri per strike (storico)',
         data: celle,
         xAxisID: 'xTime', yAxisID: 'y',
-        backgroundColor: (ctx: any) => {
+        backgroundColor: (ctx: { raw?: { v?: number } }) => {
           const v = ctx.raw?.v || 0;
           const opacita = 0.12 + quotaMuro(v) * 0.8;
           return v > 0 ? `rgba(34, 197, 94, ${opacita})` : `rgba(239, 68, 68, ${opacita})`;
@@ -589,7 +499,7 @@ export default function GexPage() {
         order: 5,
       };
 
-      return [heatDataset, priceDataset, blueDotsDataset, purpleDotsDataset];
+      return [heatDataset, priceDataset];
     }
 
     // Il divisore era 15, con i valori in M$: sopra i 15 M$ -- cioe' sempre,
@@ -645,7 +555,7 @@ export default function GexPage() {
     isUserZoomedRef.current = false;
     setIsZoomed(false);
 
-    const datasets = buildDatasets(latestGexData.current, latestSpxHistory.current, gexProfile);
+    const datasets = buildDatasets(latestSpxHistory.current, gexProfile);
 
     const xLimits = (() => {
       if (timeWindow === 'all') return null;
@@ -696,7 +606,10 @@ export default function GexPage() {
               label: (ctx: any) => {
                 const l = ctx.dataset.label || '';
                 if (l.includes('SPX Price')) return `SPX Price: ${ctx.parsed.y.toFixed(2)}`;
-                if (l.includes('GEX+') || l.includes('GEX-')) return `${l.split(' ')[0]} Strike ${ctx.parsed.y}: ${(ctx.raw?.gex || 0).toFixed(2)} M$`;
+                if (l.includes('storico')) {
+                  const v = ctx.raw?.v || 0;
+                  return `Strike ${ctx.parsed.y}: ${(v / 1000).toFixed(1)} Bn`;
+                }
                 return `${l}: ${ctx.parsed.x.toFixed(2)} M$`;
               },
             },
@@ -793,7 +706,7 @@ export default function GexPage() {
     const chart = chartRef.current;
     if (!chart) return;
 
-    const newDatasets = buildDatasets(gexData, spxHistory, gexProfile);
+    const newDatasets = buildDatasets(spxHistory, gexProfile);
 
     newDatasets.forEach((ds, i) => {
       if (chart.data.datasets[i]) {
@@ -854,7 +767,7 @@ export default function GexPage() {
     }
 
     chart.update('none');
-  }, [gexData, spxHistory, gexProfile, lineAnnotations, yLimits, timeWindow, lineDate, buildDatasets]);
+  }, [spxHistory, gexProfile, lineAnnotations, yLimits, timeWindow, lineDate, buildDatasets]);
 
   // ─── Reset zoom ───
   const handleResetZoom = useCallback(() => {
