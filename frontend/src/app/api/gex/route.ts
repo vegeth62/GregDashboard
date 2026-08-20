@@ -84,11 +84,34 @@ interface ProfileSnapshot {
     rows: ProfileRow[];
 }
 
+/**
+ * Una fotografia del profilo cumulato, in forma compatta: i valori stanno
+ * nello stesso ordine degli strike dichiarati una volta sola accanto alla
+ * serie. Ripetere `{strike, gex, gexOi}` per 37 strike e 250 istanti
+ * significherebbe mandare tre volte la stessa cosa.
+ */
+interface SerieFrame {
+    time: string;
+    gex: number[];
+    gexOi: number[];
+}
+
 /** Quanto lontano indietro guardano i pallini storici. */
 const MINUTI_STORICO = [1, 5, 10];
 
 /** Un punto di spot ogni mezzo minuto: piu' fitto non si distingue. */
 const SPOT_STEP_SEC = 30;
+
+/**
+ * Ogni quanto fotografare il profilo cumulato per la serie storica.
+ *
+ * `profile` dice com'e' il muro adesso, e una riga orizzontale tirata da un
+ * capo all'altro del grafico non puo' dire altro. Per vedere COME i livelli si
+ * sono costruiti serve il cumulato a ogni istante, non solo all'ultimo: questa
+ * e' quella serie, campionata ogni due minuti perche' a dieci secondi
+ * sarebbero tremila fotografie da 37 valori l'una per niente.
+ */
+const SERIE_STEP_SEC = 120;
 
 function toSeconds(hhmmss: string): number {
     const [h, m, s] = hhmmss.split(':').map(Number);
@@ -185,7 +208,14 @@ function elaboraSnapshot(
     dateStr: string,
     base: Map<number, Netti> | null,
     conStorico: boolean,
-): { points: GexPoint[]; profile: ProfileRow[]; spot: SpotPoint[]; profileHistory: ProfileSnapshot[] } {
+): {
+    points: GexPoint[];
+    profile: ProfileRow[];
+    spot: SpotPoint[];
+    profileHistory: ProfileSnapshot[];
+    strikes: number[];
+    serie: SerieFrame[];
+} {
     const points: GexPoint[] = [];
     const precedenti = new Map<number, Netti>(base ?? []);
     const profilo = new Map<number, ProfileRow>();
@@ -206,6 +236,12 @@ function elaboraSnapshot(
     // 10 minuti non veniva quasi mai fuori, e i pallini erano due invece di tre.
     const inizioCoda = ultimoSec - Math.max(...MINUTI_STORICO) * 60 - 60;
     const coda: { sec: number; time: string; rows: ProfileRow[] }[] = [];
+
+    // La serie storica del profilo: una fotografia ogni SERIE_STEP_SEC, per
+    // tutta la sessione. E' quella che permette di vedere un muro costruirsi
+    // invece che trovarselo gia' fatto.
+    const fotografie: { time: string; mappa: Map<number, ProfileRow> }[] = [];
+    let ultimaSerieSec = -Infinity;
 
     for (const snap of snapshots) {
         const timeEt = romeToNewYork(dateStr, snap.time);
@@ -254,6 +290,10 @@ function elaboraSnapshot(
         if (conStorico && snapSec >= inizioCoda) {
             coda.push({ sec: snapSec, time: timeEt, rows: [...profilo.values()] });
         }
+        if (conStorico && snapSec - ultimaSerieSec >= SERIE_STEP_SEC) {
+            fotografie.push({ time: timeEt, mappa: new Map(profilo) });
+            ultimaSerieSec = snapSec;
+        }
         ultimoValido = { time: timeEt, price: spot };
     }
 
@@ -281,11 +321,32 @@ function elaboraSnapshot(
         }
     }
 
+    const profiloFinale = [...profilo.values()].sort((a, b) => a.strike - b.strike);
+    const strikes = profiloFinale.map((r) => r.strike);
+
+    // L'ultima fotografia deve essere lo stato di adesso, non quella di due
+    // minuti fa: e' il bordo destro del grafico.
+    if (conStorico && ultimoValido && fotografie[fotografie.length - 1]?.time !== ultimoValido.time) {
+        fotografie.push({ time: ultimoValido.time, mappa: new Map(profilo) });
+    }
+
+    // Gli strike si fissano solo qui: uno comparso a meta' sessione manca
+    // dalle fotografie precedenti, e li' vale zero.
+    // Arrotondati al milione: la serie e' fatta per essere colorata, non
+    // letta cifra per cifra, e i due decimali costavano un terzo del peso.
+    const serie: SerieFrame[] = fotografie.map((f) => ({
+        time: f.time,
+        gex: strikes.map((s) => Math.round(f.mappa.get(s)?.gex ?? 0)),
+        gexOi: strikes.map((s) => Math.round(f.mappa.get(s)?.gexOi ?? 0)),
+    }));
+
     return {
         points,
-        profile: [...profilo.values()].sort((a, b) => a.strike - b.strike),
+        profile: profiloFinale,
         spot: spotSerie,
         profileHistory,
+        strikes,
+        serie,
     };
 }
 
@@ -422,7 +483,7 @@ export async function GET(request: Request) {
         // dieci minuti i pallini: dopo, il client ha gia' i profili che ha
         // ricevuto e se li tiene da solo. Con `since` la finestra e' larga
         // pochi secondi e non conterrebbe comunque niente.
-        const { points, profile, spot, profileHistory } = elaboraSnapshot(snapshots, targetDate, base, !since);
+        const { points, profile, spot, profileHistory, strikes, serie } = elaboraSnapshot(snapshots, targetDate, base, !since);
         // `lastTime` e' l'ora di Roma dell'ultimo snapshot: il client la
         // rimanda come `since`. I punti invece portano l'ora di New York,
         // che e' quella su cui ragiona la pagina.
@@ -458,7 +519,7 @@ export async function GET(request: Request) {
         // `profile` sostituisce quello che il client ha, non ci si somma: e'
         // gia' il totale di giornata. `points` invece si accoda.
         return NextResponse.json(
-            { date: targetDate, since, lastTime, points: finali, profile, spot, profileHistory, troncato: tagliati },
+            { date: targetDate, since, lastTime, points: finali, profile, spot, profileHistory, strikes, serie, troncato: tagliati },
             { status: 200 },
         );
     } catch (e: unknown) {

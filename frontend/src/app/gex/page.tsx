@@ -50,6 +50,16 @@ interface ProfileRow {
   gexOi: number;
 }
 
+/**
+ * Una fotografia del profilo cumulato, come la manda l'API: i valori sono
+ * nell'ordine di `strikes`, dichiarato una volta sola.
+ */
+interface SerieFrame {
+  time: string;
+  gex: number[];
+  gexOi: number[];
+}
+
 interface SpxHistoryPoint {
   time: string;
   spxPrice?: number | null;
@@ -112,6 +122,18 @@ const RIFERIMENTO_BOLLA_M: Record<'volume' | 'oi', number> = { volume: 1000, oi:
  */
 const SOGLIA_RIGA = 0.18;
 
+/**
+ * Ogni quanto il client allunga la storia del profilo. E' lo stesso passo con
+ * cui la campiona il server, cosi' la fotografia che arriva al caricamento e
+ * quelle che si aggiungono poi hanno la stessa densita'.
+ */
+const SERIE_STEP_SEC = 120;
+
+function secondiEt(hhmmss: string): number {
+  const [h, m, sec] = hhmmss.split(':').map(Number);
+  return (h || 0) * 3600 + (m || 0) * 60 + (sec || 0);
+}
+
 function getESTNowStr(): string {
   const localDate = new Date();
   // CET is 6 hours ahead of EST/EDT
@@ -122,6 +144,11 @@ function getESTNowStr(): string {
 export default function GexPage() {
   const [gexData, setGexData] = useState<GexPoint[]>([]);
   const [profile, setProfile] = useState<ProfileRow[]>([]);
+  // La storia del profilo: com'era il muro su ogni strike, istante per
+  // istante. E' quello che una riga orizzontale non puo' dire, perche' ne
+  // attraversa il grafico con un valore solo.
+  const [serie, setSerie] = useState<SerieFrame[]>([]);
+  const [strikesSerie, setStrikesSerie] = useState<number[]>([]);
   const [spxHistory, setSpxHistory] = useState<SpxHistoryPoint[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'lines' | 'bars'>('lines');
@@ -129,7 +156,10 @@ export default function GexPage() {
   // posizioni aperte (posizionamento, il GEX canonico). Ogni punto porta
   // gia' entrambi i valori, quindi il cambio e' istantaneo.
   const [gexBasis, setGexBasis] = useState<'volume' | 'oi'>('volume');
-  const [timeWindow, setTimeWindow] = useState<number | 'all'>(5);
+  // La vista di partenza e' la sessione intera: da quando la pagina disegna
+  // come i muri si sono costruiti, una finestra di cinque minuti nasconde
+  // proprio la cosa che c'e' da guardare.
+  const [timeWindow, setTimeWindow] = useState<number | 'all'>('all');
   const [isZoomed, setIsZoomed] = useState(false);
   const [pluginsReady, setPluginsReady] = useState(false);
   const [nowClock, setNowClock] = useState<Date>(() => new Date());
@@ -152,6 +182,8 @@ export default function GexPage() {
   const prevLineDateRef = useRef<number>(0);
   const latestGexData = useRef<GexPoint[]>([]);
   const latestSpxHistory = useRef<SpxHistoryPoint[]>([]);
+  const latestSerie = useRef<SerieFrame[]>([]);
+  const latestStrikes = useRef<number[]>([]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -162,6 +194,8 @@ export default function GexPage() {
 
   latestGexData.current = gexData;
   latestSpxHistory.current = spxHistory;
+  latestSerie.current = serie;
+  latestStrikes.current = strikesSerie;
 
   // ─── Dynamic import of plugins (client-side only) ───
   useEffect(() => {
@@ -196,6 +230,8 @@ export default function GexPage() {
           lastGexTime.current = null;
           setGexData([]);
           setProfile([]);
+          setSerie([]);
+          setStrikesSerie([]);
           // Il metro non si eredita dal giorno prima: torna al nominale e
           // ricomincia a crescere con la sessione nuova.
           fondoScala.current = { ...FONDO_SCALA_M };
@@ -204,6 +240,36 @@ export default function GexPage() {
         if (json.date) giornoSessione.current = json.date;
 
         if (json.lastTime) lastGexTime.current = json.lastTime;
+
+        // La storia del profilo arriva intera solo al primo caricamento: con
+        // `since` la finestra e' larga pochi secondi e non conterrebbe niente.
+        // Da li' in poi la allunga il client, una fotografia ogni due minuti,
+        // usando il cumulato che riceve comunque a ogni giro.
+        if (!since) {
+          if (Array.isArray(json.strikes) && json.strikes.length > 0) setStrikesSerie(json.strikes);
+          if (Array.isArray(json.serie)) setSerie(json.serie);
+        } else {
+          // L'ora di New York dell'ultimo snapshot e' quella dell'ultimo punto
+          // di spot: `lastTime` e' ora di Roma e serve solo come cursore.
+          const spotIn: { time: string }[] = json.spot ?? [];
+          const oraEt = spotIn.length > 0 ? spotIn[spotIn.length - 1].time : null;
+          const profiloIn: ProfileRow[] = json.profile ?? [];
+          if (oraEt && profiloIn.length > 0) {
+            setSerie((prec) => {
+              const ultima = prec[prec.length - 1];
+              if (ultima && secondiEt(oraEt) - secondiEt(ultima.time) < SERIE_STEP_SEC) return prec;
+              const strikes = latestStrikes.current;
+              if (strikes.length === 0) return prec;
+              const mappa = new Map(profiloIn.map((r) => [r.strike, r]));
+              return [...prec, {
+                time: oraEt,
+                gex: strikes.map((k) => Math.round(mappa.get(k)?.gex ?? 0)),
+                gexOi: strikes.map((k) => Math.round(mappa.get(k)?.gexOi ?? 0)),
+              }];
+            });
+          }
+        }
+
         const incoming: GexPoint[] = json.points ?? [];
         // Il profilo e' gia' il totale di giornata: si sostituisce, non si
         // somma. I punti sono flusso, quelli si accodano -- ma solo entro la
@@ -315,6 +381,12 @@ export default function GexPage() {
 
   const fondoScala = useRef({ ...FONDO_SCALA_M });
 
+  /** Quanto pesa un valore sul metro fermo, da 0 a 1. */
+  const quotaMuro = useCallback(
+    (valore: number) => Math.min(1, Math.sqrt(Math.abs(valore) / fondoScala.current[gexBasis])),
+    [gexBasis],
+  );
+
   /**
    * Il metro con cui si disegna: assoluto, e per tutta la sessione non
    * torna mai indietro. Se si accorciasse quando i livelli calano, la stessa
@@ -365,26 +437,26 @@ export default function GexPage() {
 
     if (viewMode !== 'lines' || gexProfile.length === 0) return annotations;
 
-    // 2. Horizontal GEX strike lines
+    // 2. Il muro adesso: una riga sottile sul bordo destro, non piu' una
+    // banda che attraversa tutto il grafico.
+    //
+    // Quelle bande erano il difetto: tirate da un capo all'altro dell'asse dei
+    // tempi con il valore di adesso, dicevano che il 7650 pesa 280 miliardi
+    // anche dove il grafico mostra le nove del mattino, quando ne pesava
+    // mezzo. La storia la racconta la mappa di calore; qui resta solo il
+    // riferimento di dov'e' il muro in questo momento.
     gexProfile.forEach((p, idx) => {
-      // Quanto marcata va disegnata: rispetto al metro fermo, cosi' un livello
-      // che cresce si ingrossa e si accende davvero. La radice tiene visibili i
-      // livelli piccoli senza appiattire i grandi l'uno sull'altro, che con un
-      // rapporto lineare finivano tutti a ridosso del fondo scala.
-      const q = Math.min(1, Math.sqrt(Math.abs(p.gex) / scalaDisegno));
-
-      // E quali disegnare: sempre col metro fermo, non piu' rispetto al piu'
-      // grande del momento. Con la soglia relativa, una giornata con un muro
-      // dominante ne lasciava passare sei -- tutte oltre i 10px, tutte uguali
-      // a vedersi. Cosi' invece ne restano una dozzina e vanno dai 4px ai 15,
-      // che e' il punto: il confronto si fa fra righe diverse fra loro.
+      const q = quotaMuro(p.gex);
       if (q < SOGLIA_RIGA) return;
-      const borderWidth = 1.5 + q * 14;
       const opacity = 0.18 + q * 0.77;
-      const borderColor = p.gex > 0
-        ? `rgba(34, 197, 94, ${opacity})`
-        : `rgba(239, 68, 68, ${opacity})`;
-      annotations[`gex-line-${idx}`] = { type: 'line', yMin: p.strike, yMax: p.strike, borderColor, borderWidth, label: { display: false } };
+      annotations[`gex-line-${idx}`] = {
+        type: 'line',
+        yMin: p.strike, yMax: p.strike,
+        borderColor: p.gex > 0 ? `rgba(34, 197, 94, ${opacity})` : `rgba(239, 68, 68, ${opacity})`,
+        borderWidth: 1,
+        borderDash: [2, 4],
+        label: { display: false },
+      };
     });
 
     // 3. Solo i 4 livelli più importanti: R1 Up/Down (Morning bold, OB tratteggiato)
@@ -422,7 +494,7 @@ export default function GexPage() {
     });
 
     return annotations;
-  }, [gexProfile, scalaDisegno, viewMode, spxHistory, lineDate, refLines, refLineVisibility, currentBasis]);
+  }, [gexProfile, scalaDisegno, quotaMuro, viewMode, spxHistory, lineDate, refLines, refLineVisibility, currentBasis]);
 
   // ─── Build datasets helper ───
   const buildDatasets = useCallback((currentGexData: GexPoint[], currentSpxHistory: SpxHistoryPoint[], currentGexProfile: { strike: number; gex: number }[]) => {
@@ -481,7 +553,44 @@ export default function GexPage() {
       pointHoverRadius: 10,
     };
 
-    if (viewMode === 'lines') return [priceDataset, blueDotsDataset, purpleDotsDataset];
+    if (viewMode === 'lines') {
+      // La mappa di calore: una colonna ogni due minuti, e in ogni colonna un
+      // quadretto per strike, colorato per quanto pesava il muro IN QUEL
+      // momento. E' la differenza fra sapere com'e' adesso il 7650 e vederlo
+      // costruirsi da mezzo miliardo a duecentottanta nell'arco del pomeriggio.
+      const strikeSerie = latestStrikes.current;
+      const celle: { x: Date; y: number; v: number }[] = [];
+      for (const f of latestSerie.current) {
+        const t = f.time.includes(':') ? f.time : `${f.time}:00`;
+        const x = new Date(`${todayStr}T${t}`);
+        if (isNaN(x.getTime())) continue;
+        const valori = gexBasis === 'oi' ? f.gexOi : f.gex;
+        for (let i = 0; i < strikeSerie.length; i++) {
+          const v = valori[i];
+          if (!v) continue;
+          if (quotaMuro(v) < SOGLIA_RIGA) continue;
+          celle.push({ x, y: strikeSerie[i], v });
+        }
+      }
+
+      const heatDataset = {
+        type: 'scatter' as const, label: 'Muri per strike (storico)',
+        data: celle,
+        xAxisID: 'xTime', yAxisID: 'y',
+        backgroundColor: (ctx: any) => {
+          const v = ctx.raw?.v || 0;
+          const opacita = 0.12 + quotaMuro(v) * 0.8;
+          return v > 0 ? `rgba(34, 197, 94, ${opacita})` : `rgba(239, 68, 68, ${opacita})`;
+        },
+        borderWidth: 0,
+        pointStyle: 'rect' as const,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        order: 5,
+      };
+
+      return [heatDataset, priceDataset, blueDotsDataset, purpleDotsDataset];
+    }
 
     // Il divisore era 15, con i valori in M$: sopra i 15 M$ -- cioe' sempre,
     // visto che a fine sessione uno strike ATM ne fa decine di migliaia -- il
@@ -510,7 +619,7 @@ export default function GexPage() {
       borderWidth: 1, barThickness: 8, indexAxis: 'y' as const,
     };
     return [priceDataset, posGexDataset, negGexDataset];
-  }, [viewMode, gexBasis]);
+  }, [viewMode, gexBasis, quotaMuro]);
 
   const handleTimeWindowChange = useCallback((w: number | 'all') => {
     setTimeWindow(w);
