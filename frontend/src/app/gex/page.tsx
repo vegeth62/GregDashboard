@@ -17,7 +17,7 @@ import {
   Legend
 } from 'chart.js';
 import 'chartjs-adapter-date-fns';
-import { leggiRefLines, leggiVisibilita } from '@/lib/refLines';
+import { leggiRefLines, leggiVisibilita, REF_LINES_KEY, REF_LINES_VIS_KEY } from '@/lib/refLines';
 
 // Base registration (safe for SSR).
 // I *Controller servono quanto gli Element: qui il grafico si costruisce a
@@ -130,10 +130,33 @@ export default function GexPage() {
   const [refLineVisibility, setRefLineVisibility] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    const salvate = leggiRefLines();
-    if (salvate) setRefLines(salvate);
-    const vis = leggiVisibilita();
-    if (vis) setRefLineVisibility(vis);
+    const rileggi = () => {
+      const salvate = leggiRefLines();
+      if (salvate) setRefLines(salvate);
+      const vis = leggiVisibilita();
+      if (vis) setRefLineVisibility(vis);
+    };
+    rileggi();
+
+    // I livelli li scrive /market, e non necessariamente prima che questa
+    // pagina si apra: con le due schede affiancate, applicare i range di
+    // fianco lasciava il grafico del gamma senza linee finche' non lo si
+    // ricaricava a mano. `storage` scatta nelle ALTRE schede della stessa
+    // origine, ed e' esattamente il caso; il ritorno sulla scheda copre il
+    // resto, compreso l'essere andati e tornati.
+    const suStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === REF_LINES_KEY || e.key === REF_LINES_VIS_KEY) rileggi();
+    };
+    const suRitorno = () => { if (!document.hidden) rileggi(); };
+
+    window.addEventListener('storage', suStorage);
+    document.addEventListener('visibilitychange', suRitorno);
+    window.addEventListener('focus', rileggi);
+    return () => {
+      window.removeEventListener('storage', suStorage);
+      document.removeEventListener('visibilitychange', suRitorno);
+      window.removeEventListener('focus', rileggi);
+    };
   }, []);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -406,13 +429,28 @@ export default function GexPage() {
       };
     });
 
-    // 3. Solo i 4 livelli più importanti: R1 Up/Down (Morning bold, OB tratteggiato)
-    const baseConfigs = [
-      { key: 'r1Up',     label: 'R1↑',    color: '#3b82f6', dash: [],     width: 2.5 },
-      { key: 'r1Down',   label: 'R1↓',    color: '#ef4444', dash: [],     width: 2.5 },
-      { key: 'r1UpOb',   label: 'R1↑ OB', color: '#60a5fa', dash: [8, 4], width: 1.5 },
-      { key: 'r1DownOb', label: 'R1↓ OB', color: '#f87171', dash: [8, 4], width: 1.5 },
-    ];
+    // 3. I livelli del Range Calc, tutti quelli che /market ha calcolato.
+    //
+    // Qui ne arrivavano quattro su dodici: R1 su e giu' per le due sessioni, e
+    // basta. R2 e R3 li calcola /market e li salva insieme agli altri, ma
+    // questa pagina non li guardava proprio -- da cui "non vedo i range
+    // riportati", che era esattamente vero per due terzi di loro.
+    //
+    // La gerarchia resta leggibile con lo spessore: R1 piena e marcata, R2 e
+    // R3 progressivamente piu' sottili e scariche. Le OB restano tratteggiate.
+    const baseConfigs = (['', 'Ob'] as const).flatMap((suffix) =>
+      ([1, 2, 3] as const).flatMap((livello) =>
+        (['Up', 'Down'] as const).map((verso) => ({
+          key: `r${livello}${verso}${suffix}`,
+          label: `R${livello}${verso === 'Up' ? '↑' : '↓'}${suffix ? ' OB' : ''}`,
+          color: verso === 'Up'
+            ? ['#3b82f6', '#60a5fa', '#93c5fd'][livello - 1]
+            : ['#ef4444', '#f87171', '#fca5a5'][livello - 1],
+          dash: suffix ? [8, 4] : [],
+          width: [2.5, 1.5, 1][livello - 1],
+        })),
+      ),
+    );
 
     baseConfigs.forEach(({ key, label, color, dash, width }) => {
       const valStr = refLines[key];
@@ -432,8 +470,8 @@ export default function GexPage() {
             xAdjust: -8,
             backgroundColor: 'rgba(15, 23, 42, 0.9)',
             color: color,
-            font: { size: 11, weight: 'bold' as const },
-            padding: { top: 3, bottom: 3, left: 5, right: 5 },
+            font: { size: width >= 2 ? 11 : 9, weight: 'bold' as const },
+            padding: { top: 2, bottom: 2, left: 4, right: 4 },
             borderRadius: 4
           }
         };
