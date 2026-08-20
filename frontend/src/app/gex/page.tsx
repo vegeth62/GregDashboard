@@ -538,13 +538,11 @@ export default function GexPage() {
           },
           zoom: {
             zoom: {
-              wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' as const,
-              // Rotella sopra un asse: si muove solo quell'asse. Sul tempo
-              // allarga o stringe la finestra senza toccare gli strike, che
-              // e' il gesto che serve per seguire il flusso -- dentro l'area
-              // del grafico resta lo zoom su entrambi. Stessa convenzione
-              // della rotella sull'asse X di /market.
-              scaleMode: 'xy' as const,
+              // La rotella la gestiamo a mano piu' sotto: qui ci sono tre
+              // scale (xTime, xGex, y) e serve poter allargare il tempo
+              // senza toccare gli strike. Al plugin restano il pizzico e il
+              // trascinamento, che vanno bene come sono.
+              wheel: { enabled: false }, pinch: { enabled: true }, mode: 'xy' as const,
               onZoom: () => { isUserZoomedRef.current = true; setIsZoomed(true); },
             },
             pan: {
@@ -557,7 +555,71 @@ export default function GexPage() {
     });
 
     chartRef.current = chart;
-    return () => { chart.destroy(); chartRef.current = null; };
+
+    /**
+     * Rotella: ogni asse per conto suo.
+     *
+     * Sopra l'asse dei tempi allarga o stringe solo la finestra temporale,
+     * sopra quello degli strike solo gli strike, dentro il grafico entrambi
+     * come prima. Il perno e' il puntatore, non il centro: si stringe dove
+     * si sta guardando.
+     *
+     * Lo zoom vero lo applica `zoomScale`, che e' del plugin: scrivere i
+     * limiti a mano in `options.scales` funzionerebbe lo stesso, ma il
+     * plugin non registrerebbe da dove si era partiti e il tasto "Reset
+     * zoom" resterebbe senza niente a cui tornare.
+     */
+    const suScala = (sc: { left: number; right: number; top: number; bottom: number } | undefined,
+                     px: number, py: number) =>
+      !!sc && px >= sc.left && px <= sc.right && py >= sc.top && py <= sc.bottom;
+
+    const onWheel = (e: WheelEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      // Su = si stringe, giu' = si allarga.
+      const fattore = e.deltaY < 0 ? 0.85 : 1.18;
+
+      const zooma = (id: 'xTime' | 'y', pixel: number) => {
+        const sc = chart.scales[id];
+        if (!sc) return;
+        const perno = sc.getValueForPixel(pixel);
+        if (perno == null || !isFinite(perno)) return;
+        chart.zoomScale(id, {
+          min: perno - (perno - sc.min) * fattore,
+          max: perno + (sc.max - perno) * fattore,
+        }, 'none');
+      };
+
+      const area = chart.chartArea;
+      const dentro = !!area && px >= area.left && px <= area.right && py >= area.top && py <= area.bottom;
+
+      if (suScala(chart.scales.xTime, px, py)) {
+        zooma('xTime', px);
+      } else if (suScala(chart.scales.y, px, py)) {
+        zooma('y', py);
+      } else if (dentro) {
+        zooma('xTime', px);
+        zooma('y', py);
+      } else {
+        // Sopra l'asse del GEX in alto, o fuori dal grafico: la pagina
+        // scorre come sempre.
+        return;
+      }
+
+      e.preventDefault();
+      isUserZoomedRef.current = true;
+      setIsZoomed(true);
+    };
+
+    // `passive: false` o il browser ignora la preventDefault e scorre la pagina.
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+      chart.destroy();
+      chartRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pluginsReady, viewMode]);
 
