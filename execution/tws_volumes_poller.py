@@ -11,6 +11,8 @@ except ImportError:
     print("Error: ib_insync is not installed. Please run 'pip install ib_insync'.")
     sys.exit(1)
 
+from poller_session import esegui_a_oltranza, registra_connessione
+
 try:
     from dotenv import load_dotenv
     from supabase import create_client
@@ -110,6 +112,8 @@ def main():
     ensure_data_dir()
     
     ib = IB()
+    # Cosi' chi tiene viva la sessione sa cosa chiudere quando finisce.
+    registra_connessione(ib)
     connected = False
     import random
     
@@ -241,8 +245,16 @@ def main():
 
     last_poll = 0
     open_spx_captured = False
+    giorno_sessione = get_today_key()
 
     while True:
+        # A mezzanotte la sessione finisce: la scadenza 0DTE scelta all'avvio
+        # e' scaduta, e restare abbonati a quei contratti vuol dire scrivere
+        # sul file di oggi i volumi di ieri. Chi ci chiama riapre tutto.
+        if get_today_key() != giorno_sessione:
+            print(f"Giorno cambiato ({giorno_sessione} -> {get_today_key()}): chiudo la sessione.")
+            return
+
         now = datetime.now()
         timestamp = now.timestamp()
         
@@ -345,6 +357,8 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        # Non `main()` una volta sola: una sessione finisce a ogni cambio di
+        # giorno, e ogni caduta di TWS deve valere un tentativo, non la morte.
+        esegui_a_oltranza(main, nome='volumes')
     except KeyboardInterrupt:
         print("\nExiting...")

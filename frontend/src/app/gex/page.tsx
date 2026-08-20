@@ -87,6 +87,7 @@ export default function GexPage() {
   const [nowClock, setNowClock] = useState<Date>(() => new Date());
   // Ora di Roma dell'ultimo snapshot ricevuto, da rimandare come `since`.
   const lastGexTime = useRef<string | null>(null);
+  const giornoSessione = useRef<string | null>(null);
   const [refLines, setRefLines] = useState<Record<string, string>>({});
   const [refLineVisibility, setRefLineVisibility] = useState<Record<string, boolean>>({});
 
@@ -138,6 +139,19 @@ export default function GexPage() {
           throw new Error(body?.error || 'Failed to load GEX data');
         }
         const json = await res.json();
+
+        // Cambio di giornata: si riparte da zero, senza `since`. Senza questo
+        // il cursore restava all'ultimo snapshot di ieri sera e per tutto
+        // oggi la pagina scartava quello che arrivava prima di quell'ora.
+        if (json.date && giornoSessione.current && json.date !== giornoSessione.current) {
+          giornoSessione.current = json.date;
+          lastGexTime.current = null;
+          setGexData([]);
+          setProfile([]);
+          return;
+        }
+        if (json.date) giornoSessione.current = json.date;
+
         if (json.lastTime) lastGexTime.current = json.lastTime;
         const incoming: GexPoint[] = json.points ?? [];
         // Il profilo e' gia' il totale di giornata: si sostituisce, non si

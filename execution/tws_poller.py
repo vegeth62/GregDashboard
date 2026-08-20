@@ -14,6 +14,8 @@ except ImportError:
 
 from supabase import create_client, Client
 
+from poller_session import esegui_a_oltranza, registra_connessione
+
 # Load environment variables
 load_dotenv()
 
@@ -250,8 +252,10 @@ def main():
         print("WARNING: Supabase credentials not found. Falling back to local files only.")
     
     ib = IB()
+    # Cosi' chi tiene viva la sessione sa cosa chiudere quando finisce.
+    registra_connessione(ib)
     connected = False
-    
+
     import random
     
     for attempt in range(5):
@@ -317,7 +321,15 @@ def main():
 
     ib.sleep(3) # Wait for initial data
 
+    giorno_sessione = get_today_key()
+
     while True:
+        # A mezzanotte la sessione finisce: gli strike ATM e le scadenze
+        # scelte ieri non valgono piu'. Chi ci chiama riapre tutto da capo.
+        if get_today_key() != giorno_sessione:
+            print(f"Giorno cambiato ({giorno_sessione} -> {get_today_key()}): chiudo la sessione.")
+            return
+
         now = datetime.now()
         hour = now.hour
         minute = now.minute
@@ -510,6 +522,8 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        # Non `main()` una volta sola: una sessione finisce a ogni cambio di
+        # giorno, e ogni caduta di TWS deve valere un tentativo, non la morte.
+        esegui_a_oltranza(main, nome='market')
     except KeyboardInterrupt:
         print("\nExiting...")

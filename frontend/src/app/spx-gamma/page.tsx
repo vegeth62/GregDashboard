@@ -122,6 +122,7 @@ export default function SpxGammaPage() {
     const [aggiornato, setAggiornato] = useState<string | null>(null);
     const [base, setBase] = useState<Base>('oi');
     const lastTime = useRef<string | null>(null);
+    const giornoSessione = useRef<string | null>(null);
 
     const fetchGex = useCallback(async () => {
         try {
@@ -139,6 +140,21 @@ export default function SpxGammaPage() {
                 throw new Error(body?.error || 'Caricamento del gamma fallito');
             }
             const json = await res.json();
+
+            // Cambio di giornata: si riparte da zero, senza `since`. Senza
+            // questo il cursore restava all'ultimo snapshot di ieri sera e
+            // oggi la pagina scartava tutto fino a quell'ora.
+            if (json.date && giornoSessione.current && json.date !== giornoSessione.current) {
+                giornoSessione.current = json.date;
+                lastTime.current = null;
+                setProfile([]);
+                setSpot([]);
+                setStorico([]);
+                setAggiornato(null);
+                return;
+            }
+            if (json.date) giornoSessione.current = json.date;
+
             if (json.lastTime) lastTime.current = json.lastTime;
 
             const nuovoProfilo: ProfileRow[] = json.profile ?? [];
