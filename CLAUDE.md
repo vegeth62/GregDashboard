@@ -35,7 +35,11 @@ python execution/init_db.py             # verify Supabase connectivity / print b
 python execution/check_sync.py          # read latest Supabase rows for today
 ```
 
-`start_dashboard.bat` (Windows) opens the browser and hands off to `scripts/keep_dashboard_alive.ps1`, a supervisor that keeps `npm run dev` up (restarting it 15s after any exit) and POSTs `/api/poller` every minute so a poller that dies with TWS comes back. It does not launch the pollers itself: they start with the server via `frontend/src/instrumentation.ts` (skipped on Vercel, or with `AUTO_START_POLLERS=false`). There is no automated test suite in this repo.
+`start_dashboard.bat` (Windows) opens the browser and hands off to `scripts/keep_dashboard_alive.ps1`, a supervisor that keeps `npm run dev` up (restarting it 15s after any exit) and POSTs `/api/poller` every minute so a poller that dies with TWS comes back. It does not launch the pollers itself: they start with the server via `frontend/src/instrumentation.ts` (skipped on Vercel, or with `AUTO_START_POLLERS=false`).
+
+**The supervisor is registered as a logon task, so nothing has to be launched by hand.** Scheduled task `GregDashboard` (AtLogon, 30s delay, no execution time limit, no elevation) runs the same script hidden. This exists because the retry wrapper inside each poller survives TWS disconnecting and the day rolling over, but not the machine being switched off: on 21/08/2026 the logs stopped at 22:05 the previous night mid-retry and nothing ran until 16:05, losing two and a half hours of the session. Starting a second supervisor is harmless — it checks whether port 3000 already answers before starting a server, so it will not put Next on 3001. Inspect it with `Get-ScheduledTask GregDashboard`, disable it with `Disable-ScheduledTask GregDashboard`.
+
+There is no automated test suite in this repo.
 
 ## Architecture
 
