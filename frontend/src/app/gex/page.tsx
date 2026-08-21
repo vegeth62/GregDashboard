@@ -407,27 +407,10 @@ export default function GexPage() {
 
     if (viewMode !== 'lines' || gexProfile.length === 0) return annotations;
 
-    // 2. Il muro adesso: una riga sottile sul bordo destro, non piu' una
-    // banda che attraversa tutto il grafico.
-    //
-    // Quelle bande erano il difetto: tirate da un capo all'altro dell'asse dei
-    // tempi con il valore di adesso, dicevano che il 7650 pesa 280 miliardi
-    // anche dove il grafico mostra le nove del mattino, quando ne pesava
-    // mezzo. La storia la racconta la mappa di calore; qui resta solo il
-    // riferimento di dov'e' il muro in questo momento.
-    gexProfile.forEach((p, idx) => {
-      const q = quotaMuro(p.gex);
-      if (q < SOGLIA_RIGA) return;
-      const opacity = 0.18 + q * 0.77;
-      annotations[`gex-line-${idx}`] = {
-        type: 'line',
-        yMin: p.strike, yMax: p.strike,
-        borderColor: p.gex > 0 ? `rgba(34, 197, 94, ${opacity})` : `rgba(239, 68, 68, ${opacity})`,
-        borderWidth: 1,
-        borderDash: [2, 4],
-        label: { display: false },
-      };
-    });
+    // Le righe orizzontali del livello corrente non ci sono piu': la linea di
+    // ogni strike arriva fino al bordo destro, e il suo ultimo tratto E' il
+    // muro di adesso. Tenerle sarebbe stato disegnare due volte la stessa
+    // cosa, una delle quali stesa anche sopra le ore in cui non valeva.
 
     // 3. I livelli del Range Calc, tutti quelli che /market ha calcolato.
     //
@@ -502,42 +485,76 @@ export default function GexPage() {
     };
 
     if (viewMode === 'lines') {
-      // La mappa di calore: una colonna ogni due minuti, e in ogni colonna un
-      // quadretto per strike, colorato per quanto pesava il muro IN QUEL
-      // momento. E' la differenza fra sapere com'e' adesso il 7650 e vederlo
-      // costruirsi da mezzo miliardo a duecentottanta nell'arco del pomeriggio.
+      // Un muro per strike, disegnato come una linea continua che attraversa
+      // la sessione cambiando colore e spessore man mano che il gamma si
+      // aggiunge o si toglie.
+      //
+      // Prima erano quadretti staccati, uno ogni due minuti: la taglia la
+      // dicevano, ma a leggerli bisognava ricomporli con l'occhio. Una linea
+      // sola dice la stessa cosa e in piu' mostra il verso -- si ingrossa
+      // mentre il muro si costruisce, si assottiglia mentre si scioglie.
+      //
+      // Il valore sta dentro ogni punto (`v`), non in una variabile catturata:
+      // l'aggiornamento imperativo sostituisce solo `data`, quindi una
+      // chiusura su un array esterno resterebbe indietro di un giro e
+      // colorerebbe i segmenti con i numeri di prima.
       const strikeSerie = latestStrikes.current;
-      const celle: { x: Date; y: number; v: number }[] = [];
-      for (const f of latestSerie.current) {
-        const t = f.time.includes(':') ? f.time : `${f.time}:00`;
-        const x = new Date(`${todayStr}T${t}`);
-        if (isNaN(x.getTime())) continue;
-        const valori = gexBasis === 'oi' ? f.gexOi : f.gex;
-        for (let i = 0; i < strikeSerie.length; i++) {
-          const v = valori[i];
-          if (!v) continue;
-          if (quotaMuro(v) < SOGLIA_RIGA) continue;
-          celle.push({ x, y: strikeSerie[i], v });
+      const serieOra = latestSerie.current;
+
+      const valoreDi = (ctx: { chart?: { data?: { datasets?: { data?: { v?: number }[] }[] } }; datasetIndex?: number; p1DataIndex?: number }) =>
+        ctx.chart?.data?.datasets?.[ctx.datasetIndex ?? 0]?.data?.[ctx.p1DataIndex ?? 0]?.v ?? 0;
+
+      const muri = [];
+      for (let i = 0; i < strikeSerie.length; i++) {
+        const strike = strikeSerie[i];
+        const punti: { x: Date; y: number; v: number }[] = [];
+        let massimo = 0;
+        for (const f of serieOra) {
+          const t = f.time.includes(':') ? f.time : `${f.time}:00`;
+          const x = new Date(`${todayStr}T${t}`);
+          if (isNaN(x.getTime())) continue;
+          const v = (gexBasis === 'oi' ? f.gexOi : f.gex)[i] ?? 0;
+          if (Math.abs(v) > massimo) massimo = Math.abs(v);
+          punti.push({ x, y: strike, v });
         }
+        // Uno strike che non ha mai contato non merita una linea: sarebbero
+        // trentasette dataset di cui venti invisibili.
+        if (punti.length === 0 || quotaMuro(massimo) < SOGLIA_RIGA) continue;
+
+        muri.push({
+          type: 'line' as const,
+          // Una sola voce in legenda per tutti: le altre resterebbero
+          // trenta caselle senza nome.
+          label: muri.length === 0 ? 'Muri per strike' : '',
+          data: punti,
+          xAxisID: 'xTime', yAxisID: 'y',
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: false,
+          tension: 0,
+          borderColor: 'rgba(148, 163, 184, 0.5)',
+          borderWidth: 1,
+          order: 5,
+          segment: {
+            borderColor: (ctx: Parameters<typeof valoreDi>[0]) => {
+              const v = valoreDi(ctx);
+              const q = quotaMuro(v);
+              // Sotto la soglia il muro non c'e' ancora: la linea non si
+              // interrompe, semplicemente non si vede, e si accende quando
+              // il livello comincia a contare.
+              if (q < SOGLIA_RIGA) return 'rgba(0, 0, 0, 0)';
+              const opacita = 0.15 + q * 0.8;
+              return v > 0 ? `rgba(34, 197, 94, ${opacita})` : `rgba(239, 68, 68, ${opacita})`;
+            },
+            borderWidth: (ctx: Parameters<typeof valoreDi>[0]) => {
+              const q = quotaMuro(valoreDi(ctx));
+              return q < SOGLIA_RIGA ? 0 : 1 + q * 13;
+            },
+          },
+        });
       }
 
-      const heatDataset = {
-        type: 'scatter' as const, label: 'Muri per strike (storico)',
-        data: celle,
-        xAxisID: 'xTime', yAxisID: 'y',
-        backgroundColor: (ctx: { raw?: { v?: number } }) => {
-          const v = ctx.raw?.v || 0;
-          const opacita = 0.12 + quotaMuro(v) * 0.8;
-          return v > 0 ? `rgba(34, 197, 94, ${opacita})` : `rgba(239, 68, 68, ${opacita})`;
-        },
-        borderWidth: 0,
-        pointStyle: 'rect' as const,
-        pointRadius: 5,
-        pointHoverRadius: 7,
-        order: 5,
-      };
-
-      return [heatDataset, priceDataset];
+      return [...muri, priceDataset];
     }
 
     // Il divisore era 15, con i valori in M$: sopra i 15 M$ -- cioe' sempre,
@@ -634,7 +651,16 @@ export default function GexPage() {
           },
         },
         plugins: {
-          legend: { display: true, position: 'bottom' as const, labels: { color: '#e2e8f0', boxWidth: 12, font: { size: 11 } } },
+          legend: {
+            display: true, position: 'bottom' as const,
+            labels: {
+              color: '#e2e8f0', boxWidth: 12, font: { size: 11 },
+              // I muri sono un dataset per strike: senza filtro la legenda
+              // diventerebbe una fila di caselle senza nome. Solo il primo
+              // porta l'etichetta, gli altri la stringa vuota.
+              filter: (item: { text?: string }) => !!item.text,
+            },
+          },
           annotation: { annotations: lineAnnotations },
           tooltip: {
             mode: 'index' as const, intersect: false,
@@ -644,9 +670,8 @@ export default function GexPage() {
               label: (ctx: any) => {
                 const l = ctx.dataset.label || '';
                 if (l.includes('SPX Price')) return `SPX Price: ${ctx.parsed.y.toFixed(2)}`;
-                if (l.includes('storico')) {
-                  const v = ctx.raw?.v || 0;
-                  return `Strike ${ctx.parsed.y}: ${(v / 1000).toFixed(1)} Bn`;
+                if (ctx.raw?.v !== undefined) {
+                  return `Strike ${ctx.parsed.y}: ${(ctx.raw.v / 1000).toFixed(1)} Bn`;
                 }
                 return `${l}: ${ctx.parsed.x.toFixed(2)} M$`;
               },
