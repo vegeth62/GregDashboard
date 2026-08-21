@@ -1,0 +1,20 @@
+# I dati dei poller non vanno nel deploy.
+#
+# Sono ignorati da git tramite il .gitignore della radice del repo, ma la CLI
+# di Vercel gira da `frontend/` e guarda `frontend/.gitignore`, dove `data/`
+# non compare: cosi' ogni deploy si portava dietro ~64 MB di JSON locali
+# (50 MB di volumi, 11 di IV, 3,4 di market).
+#
+# Il guaio vero non e' il peso. Le route ripiegano sul file locale quando
+# Supabase non risponde, quindi il sito pubblicato SERVIVA quei file: il
+# 21/08/2026 /api/iv-monitor in produzione rispondeva con 173 snapshot fermi
+# alle 16:20:14, l'istante del deploy, mentre in locale la sessione andava
+# avanti. Sembrava vivo ed era una fotografia -- peggio che non rispondere.
+#
+# Senza questi file il ripiego non ha niente da servire e la mancanza si vede,
+# che e' esattamente quello che deve succedere finche' la tabella su Supabase
+# non esiste (vedi sql/002_iv_snapshots.sql).
+# Ancorato alla radice: `data/` senza barra iniziale escludeva ANCHE
+# `src/data/`, da cui la pagina spx-gamma-v2 importa il suo provider, e il
+# build su Vercel moriva su un import che in locale si risolveva benissimo.
+/data/
