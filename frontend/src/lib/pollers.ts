@@ -10,6 +10,7 @@ const LOG_DIR = path.join(ROOT_DIR, '.tmp', 'poller-logs');
 const POLLER_SCRIPTS = [
     'execution/tws_poller.py',
     'execution/tws_volumes_poller.py',
+    'execution/tws_iv_poller.py',
 ];
 
 /** Un poller vivo scrive sul suo log ogni 10-16 secondi. */

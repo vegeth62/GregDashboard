@@ -60,6 +60,30 @@ def read_session_file(date_key):
 
 _session_cache = {"date": None, "snapshots": []}
 
+
+def _senza_nan(valore):
+    """
+    Sostituisce i NaN con None, ricorsivamente.
+
+    `json.dump` di suo scrive NaN, che JSON non prevede: JSON.parse lo rifiuta
+    e con lui l'INTERO file, non la sola riga sbagliata. Il 20 agosto 2026 e'
+    bastato un `"esPrice":NaN` -- IBKR non aveva ancora un prezzo -- per
+    rendere illeggibili 7,3 MB, cioe' tutta la giornata: la route leggeva,
+    falliva il parse e rispondeva con una lista vuota.
+
+    `allow_nan=False` non andrebbe bene: solleverebbe, e a quel punto non si
+    scriverebbe piu' niente. Qui il valore mancante diventa `null`, che e'
+    esattamente quello che e'.
+    """
+    if isinstance(valore, float):
+        return None if valore != valore else valore
+    if isinstance(valore, dict):
+        return {k: _senza_nan(v) for k, v in valore.items()}
+    if isinstance(valore, list):
+        return [_senza_nan(v) for v in valore]
+    return valore
+
+
 def append_to_session_file(date_key, snapshot):
     ensure_data_dir()
 
@@ -67,7 +91,7 @@ def append_to_session_file(date_key, snapshot):
         _session_cache["date"] = date_key
         _session_cache["snapshots"] = read_session_file(date_key)
 
-    _session_cache["snapshots"].append(snapshot)
+    _session_cache["snapshots"].append(_senza_nan(snapshot))
 
     file_path = get_file_path(date_key)
     try:
@@ -88,6 +112,7 @@ def push_snapshot_to_supabase(date_key, snapshot):
     try:
         if _supabase_client is None:
             _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        snapshot = _senza_nan(snapshot)
         _supabase_client.table("iv_snapshots").upsert({
             "date": date_key,
             "time": snapshot["time"],
