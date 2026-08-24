@@ -620,6 +620,22 @@ export default function GexPage() {
       return { min: minDate, max: maxDateWithPadding };
     })();
 
+    /**
+     * Rimette l'asse del GEX dov'era.
+     *
+     * Il plugin zooma e trascina tutte le scale insieme, e il suo `mode` non
+     * sa distinguerne una: senza questo, trascinare dentro il grafico faceva
+     * scorrere anche il profilo, che invece deve restare inchiodato -- la
+     * lunghezza di una barra e' un valore in dollari, non una posizione.
+     */
+    const fissaProfilo = () => {
+      const c = chartRef.current;
+      const opt = (c?.options.scales as { xGex?: { min?: number; max?: number } } | undefined)?.xGex;
+      if (!opt) return;
+      opt.min = 0;
+      delete opt.max;
+    };
+
     const chart = new ChartJS(canvas, {
       type: 'bar',
       data: { datasets: datasets as any },
@@ -643,7 +659,11 @@ export default function GexPage() {
             grid: { display: false }, ticks: { color: '#94a3b8', font: { size: 10 } }, min: 0,
           },
           y: {
-            type: 'linear' as const, position: 'right' as const,
+            type: 'linear' as const,
+            // Nella vista a barre la scala sta a sinistra, dove le barre hanno
+            // la base: leggere l'altezza di un muro guardando dall'altra parte
+            // del grafico non aiutava nessuno.
+            position: (viewMode === 'bars' ? 'left' : 'right') as 'left' | 'right',
             min: yLimits.min, max: yLimits.max,
             title: { display: true, text: 'Strike', color: '#94a3b8', font: { size: 11, weight: 'bold' as const } },
             grid: { color: 'rgba(255,255,255,0.05)' },
@@ -678,17 +698,22 @@ export default function GexPage() {
             },
           },
           zoom: {
+            // `xGex` non compare: il profilo resta inchiodato dov'e'. Zoom e
+            // trascinamento del plugin lavorano su tutte le scale insieme, e
+            // non c'e' un modo di escluderne una dal `mode`; il ritocco lo fa
+            // `fissaProfilo()`, richiamato dopo ogni gesto.
+            limits: { xGex: { min: 0 } },
             zoom: {
               // La rotella la gestiamo a mano piu' sotto: qui ci sono tre
               // scale (xTime, xGex, y) e serve poter allargare il tempo
               // senza toccare gli strike. Al plugin restano il pizzico e il
               // trascinamento, che vanno bene come sono.
               wheel: { enabled: false }, pinch: { enabled: true }, mode: 'xy' as const,
-              onZoom: () => { isUserZoomedRef.current = true; setIsZoomed(true); },
+              onZoom: () => { fissaProfilo(); isUserZoomedRef.current = true; setIsZoomed(true); },
             },
             pan: {
               enabled: true, mode: 'xy' as const,
-              onPan: () => { isUserZoomedRef.current = true; setIsZoomed(true); },
+              onPan: () => { fissaProfilo(); isUserZoomedRef.current = true; setIsZoomed(true); },
             },
           },
         },
@@ -738,10 +763,14 @@ export default function GexPage() {
       const dentro = !!area && px >= area.left && px <= area.right && py >= area.top && py <= area.bottom;
 
       if (asse) {
+        // Il profilo non si muove nemmeno con la rotella sopra la sua scala.
+        if (asse.id === 'xGex') return;
         zooma(asse, asse.isHorizontal() ? px : py);
       } else if (dentro) {
-        // Dentro il grafico si muovono insieme, come prima.
+        // Dentro il grafico si muovono insieme, come prima -- tranne il
+        // profilo, che resta fermo.
         for (const sc of Object.values(chart.scales)) {
+          if (sc.id === 'xGex') continue;
           zooma(sc, sc.isHorizontal() ? px : py);
         }
       } else {
@@ -756,8 +785,63 @@ export default function GexPage() {
     // `passive: false` o il browser ignora la preventDefault e scorre la pagina.
     canvas.addEventListener('wheel', onWheel, { passive: false });
 
+    /**
+     * Trascinamento verticale preso dalla scala degli strike.
+     *
+     * Premendo sulla scala e tirando su o giu' si sposta la finestra dei
+     * prezzi: si muovono insieme il profilo e la linea del prezzo, perche'
+     * condividono l'asse `y`. Dentro l'area del grafico il trascinamento
+     * resta quello del plugin, che muove anche il tempo; qui invece il gesto
+     * e' mirato, e non c'e' modo di spostare per sbaglio qualcos'altro.
+     */
+    let trascinamento: { daY: number; min: number; max: number } | null = null;
+
+    const suGiu = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const sc = chart.scales.y;
+      if (!sc || px < sc.left || px > sc.right || py < sc.top || py > sc.bottom) return;
+      trascinamento = { daY: py, min: sc.min, max: sc.max };
+      canvas.style.cursor = 'ns-resize';
+      e.preventDefault();
+    };
+
+    const suMuovi = (e: MouseEvent) => {
+      if (!trascinamento) return;
+      const sc = chart.scales.y;
+      if (!sc) return;
+      const py = e.clientY - canvas.getBoundingClientRect().top;
+      // Quanti punti di strike vale un pixel, sulla finestra di partenza.
+      const perPixel = (trascinamento.max - trascinamento.min) / Math.max(1, sc.bottom - sc.top);
+      // Tirando verso il basso si scende di prezzo, come afferrare il foglio.
+      const scarto = (py - trascinamento.daY) * perPixel;
+      chart.zoomScale('y', {
+        min: trascinamento.min + scarto,
+        max: trascinamento.max + scarto,
+      }, 'none');
+      isUserZoomedRef.current = true;
+      setIsZoomed(true);
+    };
+
+    const suSu = () => {
+      if (!trascinamento) return;
+      trascinamento = null;
+      canvas.style.cursor = '';
+    };
+
+    canvas.addEventListener('mousedown', suGiu);
+    // Su window e non sul canvas: tirando in fretta il puntatore esce dal
+    // grafico, e con i gestori sul canvas il trascinamento restava appeso.
+    window.addEventListener('mousemove', suMuovi);
+    window.addEventListener('mouseup', suSu);
+
     return () => {
       canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('mousedown', suGiu);
+      window.removeEventListener('mousemove', suMuovi);
+      window.removeEventListener('mouseup', suSu);
       chart.destroy();
       chartRef.current = null;
     };
