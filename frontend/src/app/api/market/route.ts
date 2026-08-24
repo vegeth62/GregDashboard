@@ -21,6 +21,100 @@ function getTodayKey() {
     return `${y}-${m}-${d}`;
 }
 
+/** I sei livelli di una sessione, piu' i valori intermedi da cui vengono. */
+interface LivelliRange {
+    basis: number;
+    straddle: number;
+    r1Up: number; r1Down: number;
+    r2Up: number; r2Down: number;
+    r3Up: number; r3Down: number;
+}
+
+type PuntoStorico = Record<string, unknown>;
+
+const numero = (v: unknown): number | null =>
+    typeof v === 'number' && isFinite(v) && v > 0 ? v : null;
+
+const secondi = (hhmmss: string): number => {
+    const [h, m, s] = hhmmss.split(':').map(Number);
+    return (h || 0) * 3600 + (m || 0) * 60 + (s || 0);
+};
+
+/**
+ * Il primo punto utile a partire da un orario, entro mezz'ora.
+ *
+ * Stessa tolleranza che la pagina market usa per compilarsi da sola: se il
+ * poller era fermo alle 10:35 in punto si prende il primo buono dopo, invece
+ * di rinunciare alla giornata.
+ */
+function puntoAllOra(storico: PuntoStorico[], oraTarget: string, campi: string[]): PuntoStorico | null {
+    const inizio = secondi(oraTarget);
+    const limite = inizio + 30 * 60;
+    for (const p of storico) {
+        const t = typeof p.time === 'string' ? p.time : '';
+        if (!t) continue;
+        const sec = secondi(t);
+        if (sec < inizio) continue;
+        if (sec > limite) break;
+        if (numero(p.esf) !== null && campi.every((c) => numero(p[c]) !== null)) return p;
+    }
+    return null;
+}
+
+/**
+ * Il modello di range dallo straddle ATM, gli stessi conti che il pannello
+ * Range fa nella pagina market.
+ *
+ * Sta anche qui perche' i livelli calcolati nel browser vivono nel
+ * localStorage di quel browser: chi apre il gamma da un'altra macchina, o dal
+ * sito pubblicato, non li vedrebbe mai. Calcolati dove i dati gia' passano,
+ * valgono per chiunque guardi. Le modifiche fatte a mano nel pannello restano
+ * pero' piu' forti di questi, e la pagina che li usa lo rispetta.
+ */
+function livelliDa(punto: PuntoStorico | null, campi: { c: string; ca: string; p: string; pa: string }): LivelliRange | null {
+    if (!punto) return null;
+    const es = numero(punto.esf);
+    const spot = numero(punto.spx) ?? numero(punto.spxRef) ?? (es !== null ? es - 15 : null);
+    const callBid = numero(punto[campi.c]);
+    const callAsk = numero(punto[campi.ca]);
+    const putBid = numero(punto[campi.p]);
+    const putAsk = numero(punto[campi.pa]);
+    if (es === null || spot === null || callBid === null || callAsk === null || putBid === null || putAsk === null) {
+        return null;
+    }
+
+    const basis = es - spot;
+    const straddle = (callBid + callAsk) / 2 + (putBid + putAsk) / 2;
+    const r3 = Math.sqrt(3);
+    const arrotonda = (v: number) => Math.round(v * 100) / 100;
+
+    return {
+        basis: arrotonda(basis),
+        straddle: arrotonda(straddle),
+        r1Up: arrotonda(spot + straddle + basis),
+        r1Down: arrotonda(spot - straddle + basis),
+        r2Up: arrotonda(spot + straddle / r3 + basis),
+        r2Down: arrotonda(spot - straddle / r3 + basis),
+        r3Up: arrotonda(spot + straddle * r3 + basis),
+        r3Down: arrotonda(spot - straddle * r3 + basis),
+    };
+}
+
+function calcolaRange(storico: PuntoStorico[]) {
+    return {
+        // La mattina si usa la chain ES: alle 10:35 a New York sono le 4:35 e
+        // le SPX quotano larghe. Il pomeriggio, a mercato aperto, quella SPX.
+        morning: livelliDa(
+            puntoAllOra(storico, '10:35:00', ['esCallBid', 'esCallAsk', 'esPutBid', 'esPutAsk']),
+            { c: 'esCallBid', ca: 'esCallAsk', p: 'esPutBid', pa: 'esPutAsk' },
+        ),
+        ob: livelliDa(
+            puntoAllOra(storico, '15:35:00', ['callBid', 'callAsk', 'putBid', 'putAsk']),
+            { c: 'callBid', ca: 'callAsk', p: 'putBid', pa: 'putAsk' },
+        ),
+    };
+}
+
 export async function GET(request: Request) {
     try {
         const { searchParams } = new URL(request.url);
@@ -124,7 +218,8 @@ export async function GET(request: Request) {
                 return NextResponse.json({ history: [] }, { status: 200 });
             }
 
-            return NextResponse.json({ history: formatHistory(data) }, { status: 200 });
+            const storico = formatHistory(data);
+            return NextResponse.json({ history: storico, range: calcolaRange(storico) }, { status: 200 });
 
         } else {
             // --- Latest price mode ---

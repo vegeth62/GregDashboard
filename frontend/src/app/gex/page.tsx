@@ -90,6 +90,26 @@ const SOGLIA_RIGA = 0.18;
  */
 const SERIE_STEP_SEC = 120;
 
+interface LivelliRange {
+  r1Up: number; r1Down: number;
+  r2Up: number; r2Down: number;
+  r3Up: number; r3Down: number;
+}
+
+/** Dai due gruppi che manda l'API alle chiavi piatte usate dal grafico. */
+function chiaviRange(r: { morning?: LivelliRange | null; ob?: LivelliRange | null }): Record<string, string> {
+  const out: Record<string, string> = {};
+  const versa = (liv: LivelliRange | null | undefined, suffisso: string) => {
+    if (!liv) return;
+    (['r1Up', 'r1Down', 'r2Up', 'r2Down', 'r3Up', 'r3Down'] as const).forEach((k) => {
+      out[`${k}${suffisso}`] = liv[k].toFixed(2);
+    });
+  };
+  versa(r?.morning, '');
+  versa(r?.ob, 'Ob');
+  return out;
+}
+
 /**
  * Da che ora il grafico ha qualcosa da mostrare: e' l'inizio della finestra
  * del poller dei volumi (13:30 italiane), quindi prima di quest'ora non
@@ -143,6 +163,10 @@ export default function GexPage() {
   const lastGexTime = useRef<string | null>(null);
   const giornoSessione = useRef<string | null>(null);
   const [refLines, setRefLines] = useState<Record<string, string>>({});
+  // Gli stessi livelli, ma calcolati dal server sullo storico di giornata.
+  // Servono a chi non li ha nel proprio localStorage -- un altro browser, il
+  // sito pubblicato -- e fanno da base: quelli locali, se ci sono, vincono.
+  const [rangeServer, setRangeServer] = useState<Record<string, string>>({});
   const [refLineVisibility, setRefLineVisibility] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -174,6 +198,18 @@ export default function GexPage() {
       window.removeEventListener('focus', rileggi);
     };
   }, []);
+
+  /**
+   * Quelli che si disegnano: i livelli del server fanno da base, e ogni
+   * valore presente in localStorage lo copre. Cosi' chi ha compilato il
+   * pannello a mano continua a vedere i suoi numeri, e chi apre la pagina da
+   * un'altra parte ne vede comunque di validi invece di niente.
+   */
+  const livelli = useMemo(() => {
+    const uniti: Record<string, string> = { ...rangeServer };
+    for (const [k, v] of Object.entries(refLines)) if (v) uniti[k] = v;
+    return uniti;
+  }, [rangeServer, refLines]);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<ChartJS | null>(null);
@@ -296,6 +332,7 @@ export default function GexPage() {
             // La finestra parte dalle 13:30, quando comincia a raccogliere il
             // poller dei volumi: cosi' l'asse copre lo stesso tratto del
             // gamma invece di allargarsi su ore in cui non c'e' nient'altro.
+            if (json.range) setRangeServer(chiaviRange(json.range));
             setSpxHistory(
               json.history
                 .filter((p: { time?: string; spx?: number | null; esf?: number | null }) => {
@@ -360,7 +397,7 @@ export default function GexPage() {
     const plausibile = (v: number) => centro === null || Math.abs(v - centro) <= centro * 0.2;
 
     const refLevels: number[] = [];
-    Object.entries(refLines).forEach(([key, valStr]) => {
+    Object.entries(livelli).forEach(([key, valStr]) => {
       const val = parseFloat(valStr);
       if (!isNaN(val) && refLineVisibility[key] !== false && plausibile(val - currentBasis)) {
         refLevels.push(val - currentBasis);
@@ -375,7 +412,7 @@ export default function GexPage() {
     const max = allValues.reduce((a, b) => (b > a ? b : a), allValues[0]);
     const padding = (max - min) * 0.05 || 50;
     return { min: Math.floor(min - padding), max: Math.ceil(max + padding) };
-  }, [gexProfile, spxHistory, refLines, refLineVisibility, currentBasis]);
+  }, [gexProfile, spxHistory, livelli, refLineVisibility, currentBasis]);
 
   const fondoScala = useRef({ ...FONDO_SCALA_M });
 
@@ -464,7 +501,7 @@ export default function GexPage() {
     );
 
     baseConfigs.forEach(({ key, label, color, dash, width }) => {
-      const valStr = refLines[key];
+      const valStr = livelli[key];
       if (valStr && !isNaN(parseFloat(valStr)) && refLineVisibility[key] !== false) {
         const spxLevel = parseFloat(valStr) - currentBasis;
         annotations[`ref-${key}`] = {
@@ -490,7 +527,7 @@ export default function GexPage() {
     });
 
     return annotations;
-  }, [gexProfile, scalaDisegno, quotaMuro, viewMode, spxHistory, lineDate, refLines, refLineVisibility, currentBasis]);
+  }, [gexProfile, scalaDisegno, quotaMuro, viewMode, spxHistory, lineDate, livelli, refLineVisibility, currentBasis]);
 
   // ─── Build datasets helper ───
   const buildDatasets = useCallback((currentSpxHistory: SpxHistoryPoint[], currentGexProfile: { strike: number; gex: number }[]) => {
