@@ -395,9 +395,14 @@ export default function MarketPage() {
      * appoggiato al supporto, o che sale mentre l'ES ribatte sulla
      * resistenza. In mezzo al range e' rumore che somiglia a un segnale.
      *
-     * Quindi si chiede che ENTRAMBI i pivot stiano vicino a un livello: e'
-     * quello che rende la coppia un doppio tentativo sulla stessa quota,
-     * invece di due punti qualsiasi in discesa.
+     * Quindi si chiede che entrambi i pivot stiano vicino allo STESSO
+     * livello: e' quello che rende la coppia un secondo tentativo sulla
+     * stessa quota, invece di due punti qualsiasi in fila.
+     *
+     * E si guarda lontano: fino a due ore fra i due pivot, non piu' solo
+     * fra pivot consecutivi. Delle molte coppie che ne escono si tiene, per
+     * ogni livello e ogni verso, la piu' lunga, scartando quelle che le si
+     * accavallano: un episodio che dura un'ora e' una riga sola, non trenta.
      *
      * I livelli arrivano dal pannello Range, sono in termini ES come i prezzi
      * qui, e non passano dal filtro della visibilita': nascondere le linee e'
@@ -407,22 +412,31 @@ export default function MarketPage() {
     const detectDivergences = useCallback((points: DataPoint[], livelli: number[]) => {
         const lbL = 5;
         const lbR = 5;
-        const rangeLower = 5;
-        const rangeUpper = 60;
+        /** Distanza minima e massima fra i due pivot, in punti da 15 secondi. */
+        const DISTANZA_MIN = 5;
+        const DISTANZA_MAX = 480;   // due ore
         /** Quanto vicino a un livello deve stare un pivot, in punti ES. */
-        const VICINANZA = 6;
+        const VICINANZA = 8;
 
-        if (points.length < lbL + lbR + rangeLower) return {};
+        if (points.length < lbL + lbR + DISTANZA_MIN) return {};
         // Senza livelli non c'e' niente a cui essere vicini: nessun segnale,
         // che e' la risposta giusta e non un guasto.
         if (livelli.length === 0) return {};
 
-        const suUnLivello = (prezzo: number) =>
-            livelli.some((l) => Math.abs(prezzo - l) <= VICINANZA);
-
         const annotations: Record<string, unknown> = {};
         const prices = points.map((p) => p.esf);
         const oscillator = points.map((p) => p.vix);
+
+        /** Indice del livello piu' vicino, se il prezzo ne e' abbastanza vicino. */
+        const livelloDi = (prezzo: number): number | null => {
+            let scelto: number | null = null;
+            let minima = Infinity;
+            livelli.forEach((l, k) => {
+                const d = Math.abs(prezzo - l);
+                if (d <= VICINANZA && d < minima) { minima = d; scelto = k; }
+            });
+            return scelto;
+        };
 
         const isPivotLow = (values: (number | null)[], index: number) => {
             const current = values[index];
@@ -446,10 +460,17 @@ export default function MarketPage() {
             return true;
         };
 
-        let lastLowPivot: { index: number; price: number; osc: number } | null = null;
-        let lastHighPivot: { index: number; price: number; osc: number } | null = null;
-        let bullCount = 0;
-        let bearCount = 0;
+        type Pivot = { index: number; price: number; osc: number; livello: number | null };
+        type Candidata = { da: Pivot; a: Pivot; livello: number; toro: boolean; durata: number };
+
+        // Non piu' un solo pivot precedente ma tutti quelli ancora in
+        // finestra: confrontando solo con l'ultimo, la coppia era per forza a
+        // pochi minuti di distanza e una divergenza lunga non poteva proprio
+        // essere vista -- allargare la finestra massima non cambiava niente,
+        // perche' non c'era nessuna coppia lontana da accettare.
+        const minimi: Pivot[] = [];
+        const massimi: Pivot[] = [];
+        const candidate: Candidata[] = [];
 
         for (let confirmIndex = lbL + lbR; confirmIndex < points.length; confirmIndex++) {
             const pivotIndex = confirmIndex - lbR;
@@ -457,72 +478,83 @@ export default function MarketPage() {
             const oscValue = oscillator[pivotIndex];
             if (price === null || oscValue === null) continue;
 
-            if (isPivotLow(oscillator, pivotIndex)) {
-                if (lastLowPivot) {
-                    const bars = pivotIndex - lastLowPivot.index;
-                    const inRange = rangeLower <= bars && bars <= rangeUpper;
-                    const priceLowerLow = price < lastLowPivot.price;
-                    const vixLowerLow = oscValue < lastLowPivot.osc;
+            const livello = livelloDi(price);
 
-                    if (inRange && priceLowerLow && vixLowerLow
-                        && suUnLivello(price) && suUnLivello(lastLowPivot.price)) {
-                        annotations[`es-vix-div-bull-line-${bullCount}`] = {
-                            type: 'line',
-                            xMin: points[lastLowPivot.index].time,
-                            xMax: points[pivotIndex].time,
-                            yMin: lastLowPivot.price,
-                            yMax: price,
-                            yScaleID: 'y-right',
-                            borderColor: 'rgba(34, 197, 94, 0.95)',
-                            borderWidth: 2,
-                            label: {
-                                display: true,
-                                content: 'Bull Div',
-                                position: 'end',
-                                backgroundColor: 'rgba(34, 197, 94, 0.95)',
-                                color: '#fff',
-                                font: { size: 10, weight: 'bold' }
-                            }
-                        };
-                        bullCount += 1;
+            if (isPivotLow(oscillator, pivotIndex)) {
+                const qui: Pivot = { index: pivotIndex, price, osc: oscValue, livello };
+                if (livello !== null) {
+                    // I piu' vecchi per primi: si prende il partner piu'
+                    // lontano che qualifichi, cioe' la divergenza piu' lunga
+                    // che finisce su questo pivot.
+                    for (const prec of minimi) {
+                        const bars = pivotIndex - prec.index;
+                        if (bars < DISTANZA_MIN || bars > DISTANZA_MAX) continue;
+                        // Stesso livello, non un livello qualsiasi: e' quello
+                        // che rende la coppia un secondo tentativo sulla
+                        // stessa quota invece di due punti in fila.
+                        if (prec.livello !== livello) continue;
+                        if (price < prec.price && oscValue < prec.osc) {
+                            candidate.push({ da: prec, a: qui, livello, toro: true, durata: bars });
+                            break;
+                        }
                     }
                 }
-                lastLowPivot = { index: pivotIndex, price, osc: oscValue };
+                minimi.push(qui);
+                while (minimi.length && pivotIndex - minimi[0].index > DISTANZA_MAX) minimi.shift();
             }
 
             if (isPivotHigh(oscillator, pivotIndex)) {
-                if (lastHighPivot) {
-                    const bars = pivotIndex - lastHighPivot.index;
-                    const inRange = rangeLower <= bars && bars <= rangeUpper;
-                    const priceHigherHigh = price > lastHighPivot.price;
-                    const vixHigherHigh = oscValue > lastHighPivot.osc;
-
-                    if (inRange && priceHigherHigh && vixHigherHigh
-                        && suUnLivello(price) && suUnLivello(lastHighPivot.price)) {
-                        annotations[`es-vix-div-bear-line-${bearCount}`] = {
-                            type: 'line',
-                            xMin: points[lastHighPivot.index].time,
-                            xMax: points[pivotIndex].time,
-                            yMin: lastHighPivot.price,
-                            yMax: price,
-                            yScaleID: 'y-right',
-                            borderColor: 'rgba(239, 68, 68, 0.95)',
-                            borderWidth: 2,
-                            label: {
-                                display: true,
-                                content: 'Bear Div',
-                                position: 'end',
-                                backgroundColor: 'rgba(239, 68, 68, 0.95)',
-                                color: '#fff',
-                                font: { size: 10, weight: 'bold' }
-                            }
-                        };
-                        bearCount += 1;
+                const qui: Pivot = { index: pivotIndex, price, osc: oscValue, livello };
+                if (livello !== null) {
+                    for (const prec of massimi) {
+                        const bars = pivotIndex - prec.index;
+                        if (bars < DISTANZA_MIN || bars > DISTANZA_MAX) continue;
+                        if (prec.livello !== livello) continue;
+                        if (price > prec.price && oscValue > prec.osc) {
+                            candidate.push({ da: prec, a: qui, livello, toro: false, durata: bars });
+                            break;
+                        }
                     }
                 }
-                lastHighPivot = { index: pivotIndex, price, osc: oscValue };
+                massimi.push(qui);
+                while (massimi.length && pivotIndex - massimi[0].index > DISTANZA_MAX) massimi.shift();
             }
         }
+
+        // Un episodio lungo produce una candidata per ogni pivot che lo
+        // attraversa: senza questa passata si finiva con decine di etichette
+        // sovrapposte sullo stesso tratto invece della sola riga che conta.
+        // Si tiene la piu' lunga e si scarta tutto quello che le si accavalla
+        // sullo stesso livello e nello stesso verso.
+        candidate.sort((a, b) => b.durata - a.durata);
+        const tenute: Candidata[] = [];
+        for (const c of candidate) {
+            const accavallata = tenute.some((t) =>
+                t.livello === c.livello && t.toro === c.toro
+                && c.da.index < t.a.index && t.da.index < c.a.index);
+            if (!accavallata) tenute.push(c);
+        }
+
+        tenute.forEach((c, i) => {
+            annotations[`es-vix-div-${c.toro ? 'bull' : 'bear'}-line-${i}`] = {
+                type: 'line',
+                xMin: points[c.da.index].time,
+                xMax: points[c.a.index].time,
+                yMin: c.da.price,
+                yMax: c.a.price,
+                yScaleID: 'y-right',
+                borderColor: c.toro ? 'rgba(34, 197, 94, 0.95)' : 'rgba(239, 68, 68, 0.95)',
+                borderWidth: 2,
+                label: {
+                    display: true,
+                    content: c.toro ? 'Bull Div' : 'Bear Div',
+                    position: 'end',
+                    backgroundColor: c.toro ? 'rgba(34, 197, 94, 0.95)' : 'rgba(239, 68, 68, 0.95)',
+                    color: '#fff',
+                    font: { size: 10, weight: 'bold' }
+                }
+            };
+        });
 
         return annotations;
     }, []);
