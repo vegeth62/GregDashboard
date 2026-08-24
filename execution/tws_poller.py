@@ -57,6 +57,46 @@ def read_session_file(date_key):
         print(f"Error reading file {file_path}: {e}")
         return []
 
+# Ora in cui si fissa il cono, in minuti da mezzanotte, e per quanto ancora
+# si accetta di fissarlo se a quell'istante preciso mancavano i dati.
+CONO_MINUTI = 15 * 60 + 35
+CONO_TOLLERANZA_MIN = 30
+
+
+def _percorso_cono(date_key):
+    return os.path.join(DATA_DIR, f"cono-{date_key}.json")
+
+
+def cono_gia_fissato(date_key):
+    """
+    Il cono di oggi, se era gia' stato fissato prima di questo avvio.
+
+    Sta in un file suo e non fra gli snapshot: quelli sono tagliati agli
+    ultimi 100, cioe' venticinque minuti, quindi un poller ripartito la sera
+    non ci troverebbe piu' il punto delle 15:35 -- ci troverebbe il piu'
+    vecchio che gli e' rimasto, delle 20:30, e lo congelerebbe chiamandolo
+    apertura. Un valore sbagliato con l'aria di essere quello giusto e' il
+    modo peggiore di sbagliare.
+    """
+    try:
+        with open(_percorso_cono(date_key), 'r', encoding='utf-8') as f:
+            salvato = json.load(f)
+        if salvato.get("date") == date_key and salvato.get("up") and salvato.get("down"):
+            return salvato["up"], salvato["down"]
+    except (FileNotFoundError, ValueError, KeyError):
+        pass
+    return None, None
+
+
+def salva_cono(date_key, su, giu, ora):
+    ensure_data_dir()
+    try:
+        with open(_percorso_cono(date_key), 'w', encoding='utf-8') as f:
+            json.dump({"date": date_key, "up": su, "down": giu, "time": ora}, f)
+    except Exception as e:
+        print(f"Impossibile salvare il cono: {e}", file=sys.stderr)
+
+
 def append_to_session_file(date_key, point):
     ensure_data_dir()
     existing = read_session_file(date_key)
@@ -300,8 +340,11 @@ def main():
 
     # Initialize option greeks variables
     vol_tide_score = 100.0
-    cone_up = None
-    cone_down = None
+    # Il cono e' di giornata: se oggi era gia' stato fissato prima di questo
+    # avvio, si riprende quello invece di ricalcolarne un altro.
+    cone_up, cone_down = cono_gia_fissato(get_today_key())
+    if cone_up:
+        print(f"Cono di oggi ripreso dal file: {cone_down} - {cone_up}")
     last_skew_update = 0
     option_tickers = [] # [atm, put90, call120]
 
@@ -468,11 +511,29 @@ def main():
                 if put_iv and call_iv and call_iv > 0:
                     vol_tide_score = round((put_iv / call_iv) * 100, 3)
                 
-                # 3. Straddle Cone Projection (using ATM IV)
-                if atm_iv and atm_iv > 0:
-                    move = atm_iv * esf * 0.052 # sqrt(1/365)
-                    cone_up = round(esf + move, 2)
-                    cone_down = round(esf - move, 2)
+                # 3. Il cono dello straddle, fissato all'apertura americana.
+                #
+                # Prima si ricalcolava a ogni giro sull'IV corrente, quindi
+                # seguiva il prezzo e si stringeva col passare delle ore: due
+                # linee che dicevano "quanto ci si aspetta di muoversi da
+                # adesso a stasera", cioe' una cosa che cambia continuamente e
+                # non si puo' usare come riferimento. Adesso lo si calcola una
+                # volta sola, alle 15:35, e resta quello per tutta la
+                # giornata: e' l'attesa del mercato al suono della campana.
+                #
+                # Se a quell'ora i dati non ci sono si riprova per mezz'ora,
+                # come per i range; passata quella, la giornata resta senza --
+                # meglio niente che un cono calcolato a un'ora qualsiasi e
+                # spacciato per quello dell'apertura.
+                if cone_up is None and atm_iv and atm_iv > 0:
+                    minuti_ora = now.hour * 60 + now.minute
+                    if CONO_MINUTI <= minuti_ora <= CONO_MINUTI + CONO_TOLLERANZA_MIN:
+                        move = atm_iv * esf * 0.052  # sqrt(1/365)
+                        cone_up = round(esf + move, 2)
+                        cone_down = round(esf - move, 2)
+                        salva_cono(get_today_key(), cone_up, cone_down, now.strftime('%H:%M:%S'))
+                        print(f"[{now.strftime('%H:%M:%S')}] Cono fissato: "
+                              f"{cone_down} - {cone_up} (IV ATM {round(atm_iv, 4)})")
             
             # Check if vix/esf are valid numbers, not NaN or 0
             if vix == vix and esf == esf and vix > 0 and esf > 0:
