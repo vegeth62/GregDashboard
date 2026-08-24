@@ -406,10 +406,10 @@ export default function SpxGammaPage() {
                     axisLine: { lineStyle: { color: '#334155' } },
                 },
                 {
-                    // Bottom X-Axis: Time (EST)
+                    // Bottom X-Axis: ora italiana, la stessa che scrive il poller
                     type: 'time',
                     position: 'bottom',
-                    name: 'Time (EST)',
+                    name: 'Ora italiana',
                     nameLocation: 'center',
                     nameGap: 30,
                     nameTextStyle: { color: '#e2e8f0', fontSize: 12, fontWeight: 'bold' },
@@ -482,7 +482,7 @@ export default function SpxGammaPage() {
                         {aggiornato && (
                             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium border bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                LIVE {aggiornato} ET
+                                LIVE {aggiornato}
                             </span>
                         )}
                         {prezzoOra != null && (

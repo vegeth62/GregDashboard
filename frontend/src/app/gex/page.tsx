@@ -95,11 +95,20 @@ function secondiEt(hhmmss: string): number {
   return (h || 0) * 3600 + (m || 0) * 60 + (sec || 0);
 }
 
-function getESTNowStr(): string {
-  const localDate = new Date();
-  // CET is 6 hours ahead of EST/EDT
-  const estDate = new Date(localDate.getTime() - 6 * 60 * 60 * 1000);
-  return estDate.toTimeString().slice(0, 8);
+/**
+ * Ora italiana adesso, 'HH:MM:SS': la stessa che il poller scrive negli
+ * snapshot, quindi confrontabile con i loro orari senza conversioni.
+ *
+ * Prima si toglievano sei ore fisse per passare a New York. Lo scarto pero'
+ * non e' sempre sei: Europa e Stati Uniti cambiano l'ora in date diverse, e
+ * per un paio di settimane l'anno il grafico sarebbe stato spostato di
+ * un'ora. Passata la pagina all'ora italiana, il problema non si pone.
+ */
+function oraItalianaAdesso(): string {
+  return new Intl.DateTimeFormat('it-IT', {
+    timeZone: 'Europe/Rome', hour12: false,
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).format(new Date());
 }
 
 export default function GexPage() {
@@ -319,7 +328,7 @@ export default function GexPage() {
   }, [spxHistory]);
 
   const yLimits = useMemo(() => {
-    const now = getESTNowStr();
+    const now = oraItalianaAdesso();
     const filteredPrices = spxHistory.filter((dp) => dp.time <= now);
     const strikes = gexProfile.map((p) => p.strike);
     const prices = filteredPrices.map((p) => p.spxPrice).filter((p): p is number => !!p);
@@ -372,8 +381,8 @@ export default function GexPage() {
 
   const lineDate = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
-    const estTimeStr = getESTNowStr();
-    return new Date(`${todayStr}T${estTimeStr}`);
+    const oraLocale = oraItalianaAdesso();
+    return new Date(`${todayStr}T${oraLocale}`);
   }, [nowClock]);
 
   const lineAnnotations = useMemo(() => {
@@ -467,7 +476,7 @@ export default function GexPage() {
   // ─── Build datasets helper ───
   const buildDatasets = useCallback((currentSpxHistory: SpxHistoryPoint[], currentGexProfile: { strike: number; gex: number }[]) => {
     const todayStr = new Date().toISOString().slice(0, 10);
-    const now = getESTNowStr();
+    const now = oraItalianaAdesso();
 
     const priceData = currentSpxHistory
       .filter(dp => dp.time <= now)
@@ -647,7 +656,7 @@ export default function GexPage() {
           xTime: {
             type: 'time' as const, position: 'bottom' as const,
             time: { unit: 'minute' as const, displayFormats: { minute: 'HH:mm' } },
-            title: { display: true, text: 'Time (EST)', color: '#94a3b8', font: { size: 11, weight: 'bold' as const } },
+            title: { display: true, text: 'Ora italiana', color: '#94a3b8', font: { size: 11, weight: 'bold' as const } },
             grid: { color: 'rgba(255,255,255,0.03)' },
             ticks: { color: '#94a3b8', font: { size: 10 } },
             min: xLimits ? xLimits.min : undefined,

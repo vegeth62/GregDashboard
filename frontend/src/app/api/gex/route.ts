@@ -121,34 +121,15 @@ function toSeconds(hhmmss: string): number {
 /** Moltiplicatore del contratto SPX. */
 const CONTRACT_SIZE = 100;
 
-/** Minuti di scarto fra un fuso e UTC per un dato istante. */
-function tzOffsetMinutes(instant: Date, timeZone: string): number {
-    const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone, hour12: false,
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).formatToParts(instant);
-    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
-    const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));
-    return (asUtc - instant.getTime()) / 60000;
-}
-
-/**
- * Converte l'orario di Roma scritto dal poller nell'orario di New York che
- * la pagina GEX si aspetta.
- *
- * Non si sottraggono sei ore fisse: Europa e Stati Uniti cambiano l'ora in
- * date diverse, e per un paio di settimane l'anno lo scarto e' di cinque.
+/*
+ * Qui c'era la conversione da ora di Roma a ora di New York, con tanto di
+ * calcolo dello scarto giusto (Europa e Stati Uniti cambiano l'ora in date
+ * diverse, e per due settimane l'anno lo scarto e' di cinque ore invece di
+ * sei). Era corretta e non serviva a niente: chi guarda questi grafici sta
+ * in Italia e ragiona in ora italiana, come gia' facevano la pagina market,
+ * i volumi e il monitor IV. Adesso l'orario che esce di qui e' lo stesso che
+ * il poller ha scritto, cioe' quello dell'orologio locale.
  */
-function romeToNewYork(dateStr: string, timeStr: string): string {
-    const guess = new Date(`${dateStr}T${timeStr}Z`);
-    if (Number.isNaN(guess.getTime())) return timeStr;
-    const instant = new Date(guess.getTime() - tzOffsetMinutes(guess, 'Europe/Rome') * 60000);
-    return new Intl.DateTimeFormat('en-GB', {
-        timeZone: 'America/New_York', hour12: false,
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-    }).format(instant);
-}
 
 function getTodayKey() {
     const now = new Date();
@@ -244,7 +225,7 @@ function elaboraSnapshot(
     let ultimaSerieSec = -Infinity;
 
     for (const snap of snapshots) {
-        const timeEt = romeToNewYork(dateStr, snap.time);
+        const orario = snap.time;
         // undPrice e' il sottostante secondo IBKR, quello su cui il gamma e'
         // stato effettivamente valutato: piu' corretto di spxPrice, che prima
         // dell'apertura del cash non esiste.
@@ -253,7 +234,7 @@ function elaboraSnapshot(
 
         const snapSec = toSeconds(snap.time);
         if (snapSec - ultimoSpotSec >= SPOT_STEP_SEC) {
-            spotSerie.push({ time: timeEt, price: spot });
+            spotSerie.push({ time: orario, price: spot });
             ultimoSpotSec = snapSec;
         }
 
@@ -280,7 +261,7 @@ function elaboraSnapshot(
             if (dVol === 0 && dOi === 0) continue;
 
             points.push({
-                time: timeEt,
+                time: orario,
                 strike: row.strike,
                 gex: strikeGex(row.gamma, dVol, spot),
                 gexOi: strikeGex(row.gamma, dOi, spot),
@@ -288,13 +269,13 @@ function elaboraSnapshot(
         }
 
         if (conStorico && snapSec >= inizioCoda) {
-            coda.push({ sec: snapSec, time: timeEt, rows: [...profilo.values()] });
+            coda.push({ sec: snapSec, time: orario, rows: [...profilo.values()] });
         }
         if (conStorico && snapSec - ultimaSerieSec >= SERIE_STEP_SEC) {
-            fotografie.push({ time: timeEt, mappa: new Map(profilo) });
+            fotografie.push({ time: orario, mappa: new Map(profilo) });
             ultimaSerieSec = snapSec;
         }
-        ultimoValido = { time: timeEt, price: spot };
+        ultimoValido = { time: orario, price: spot };
     }
 
     // L'ultimo prezzo non deve aspettare il prossimo passo di campionamento:
