@@ -385,49 +385,55 @@ export default function MarketPage() {
 
     // ---- ES/VIX Divergence Detection ----
     /**
-     * Divergenze ES/VIX, ma solo dove contano: sui livelli.
+     * Divergenze ES/VIX su un livello.
      *
-     * Il rilevatore trovava ogni coppia di pivot che divergeva, e ne trovava
-     * tante: mezze etichette sparse per il grafico, la maggior parte su
-     * oscillazioni in mezzo al niente. Una divergenza fra prezzo e volatilita'
-     * dice qualcosa quando il prezzo sta provando un livello e non riesce a
-     * passarlo -- il VIX che non conferma il nuovo minimo mentre l'ES e'
-     * appoggiato al supporto, o che sale mentre l'ES ribatte sulla
-     * resistenza. In mezzo al range e' rumore che somiglia a un segnale.
+     * L'idea e' quella del doppio tentativo: il prezzo torna a provare la
+     * stessa quota e la volatilita' non lo accompagna. Due minimi appoggiati
+     * al supporto con il VIX piu' basso al secondo -- la paura rientra mentre
+     * il prezzo tiene -- e' un segnale rialzista; due massimi sulla resistenza
+     * con il VIX piu' alto e' quello opposto.
      *
-     * Quindi si chiede che entrambi i pivot stiano vicino allo STESSO
-     * livello: e' quello che rende la coppia un secondo tentativo sulla
-     * stessa quota, invece di due punti qualsiasi in fila.
+     * Tre cose lo rendono quello che e', e ognuna ha una storia.
      *
-     * E si guarda lontano: fino a due ore fra i due pivot, non piu' solo
-     * fra pivot consecutivi. Delle molte coppie che ne escono si tiene, per
-     * ogni livello e ogni verso, la piu' lunga, scartando quelle che le si
-     * accavallano: un episodio che dura un'ora e' una riga sola, non trenta.
+     * I pivot si cercano sull'ES, non sul VIX. Cercandoli sul VIX i due punti
+     * a confronto cadevano dove capitava rispetto al prezzo, e la coppia non
+     * era un doppio tentativo su una quota: erano due momenti qualsiasi in cui
+     * la volatilita' aveva girato.
+     *
+     * Devono stare vicinissimi allo stesso livello, tre punti ES. Non e' una
+     * taratura, e' la definizione: il segnale dice "il prezzo ha provato
+     * QUESTA quota due volte", e a otto o dieci punti di distanza non la stava
+     * piu' provando.
+     *
+     * E si guarda lontano, fino a due ore. Prima si teneva un solo pivot
+     * precedente, sovrascritto a ogni pivot nuovo, quindi si confrontavano
+     * sempre e solo pivot consecutivi: la divergenza piu' lunga trovabile in
+     * una giornata era di cinque minuti, e allargare la finestra massima non
+     * cambiava niente, perche' non c'era nessuna coppia lontana da accettare.
      *
      * I livelli arrivano dal pannello Range, sono in termini ES come i prezzi
      * qui, e non passano dal filtro della visibilita': nascondere le linee e'
-     * una scelta di pulizia del grafico, non dice che quei livelli non
-     * esistono piu'.
+     * pulizia del grafico, non dice che quei livelli non esistano piu'.
      */
     const detectDivergences = useCallback((points: DataPoint[], livelli: number[]) => {
         const lbL = 5;
         const lbR = 5;
-        /** Distanza minima e massima fra i due pivot, in punti da 15 secondi. */
+        /** Distanza fra i due pivot, in punti da 15 secondi. */
         const DISTANZA_MIN = 5;
         const DISTANZA_MAX = 480;   // due ore
-        /** Quanto vicino a un livello deve stare un pivot, in punti ES. */
-        const VICINANZA = 8;
+        /** Quanto vicino al livello deve stare un pivot, in punti ES. */
+        const VICINANZA = 3;
+        /** Di quanto deve essersi mosso il VIX perche' sia una divergenza. */
+        const DELTA_VIX = 0.05;
 
         if (points.length < lbL + lbR + DISTANZA_MIN) return {};
-        // Senza livelli non c'e' niente a cui essere vicini: nessun segnale,
-        // che e' la risposta giusta e non un guasto.
         if (livelli.length === 0) return {};
 
         const annotations: Record<string, unknown> = {};
         const prices = points.map((p) => p.esf);
         const oscillator = points.map((p) => p.vix);
 
-        /** Indice del livello piu' vicino, se il prezzo ne e' abbastanza vicino. */
+        /** Indice del livello piu' vicino, se il prezzo ci sta praticamente sopra. */
         const livelloDi = (prezzo: number): number | null => {
             let scelto: number | null = null;
             let minima = Infinity;
@@ -438,36 +444,21 @@ export default function MarketPage() {
             return scelto;
         };
 
-        const isPivotLow = (values: (number | null)[], index: number) => {
+        const isPivot = (values: (number | null)[], index: number, alto: boolean) => {
             const current = values[index];
             if (current === null) return false;
             for (let i = index - lbL; i <= index + lbR; i++) {
                 if (i === index) continue;
                 const value = values[i];
-                if (value === null || value < current) return false;
+                if (value === null) return false;
+                if (alto ? value > current : value < current) return false;
             }
             return true;
         };
 
-        const isPivotHigh = (values: (number | null)[], index: number) => {
-            const current = values[index];
-            if (current === null) return false;
-            for (let i = index - lbL; i <= index + lbR; i++) {
-                if (i === index) continue;
-                const value = values[i];
-                if (value === null || value > current) return false;
-            }
-            return true;
-        };
+        type Pivot = { index: number; price: number; osc: number; livello: number };
+        type Candidata = { da: Pivot; a: Pivot; toro: boolean; durata: number };
 
-        type Pivot = { index: number; price: number; osc: number; livello: number | null };
-        type Candidata = { da: Pivot; a: Pivot; livello: number; toro: boolean; durata: number };
-
-        // Non piu' un solo pivot precedente ma tutti quelli ancora in
-        // finestra: confrontando solo con l'ultimo, la coppia era per forza a
-        // pochi minuti di distanza e una divergenza lunga non poteva proprio
-        // essere vista -- allargare la finestra massima non cambiava niente,
-        // perche' non c'era nessuna coppia lontana da accettare.
         const minimi: Pivot[] = [];
         const massimi: Pivot[] = [];
         const candidate: Candidata[] = [];
@@ -479,41 +470,34 @@ export default function MarketPage() {
             if (price === null || oscValue === null) continue;
 
             const livello = livelloDi(price);
+            if (livello === null) continue;
+            const qui: Pivot = { index: pivotIndex, price, osc: oscValue, livello };
 
-            if (isPivotLow(oscillator, pivotIndex)) {
-                const qui: Pivot = { index: pivotIndex, price, osc: oscValue, livello };
-                if (livello !== null) {
-                    // I piu' vecchi per primi: si prende il partner piu'
-                    // lontano che qualifichi, cioe' la divergenza piu' lunga
-                    // che finisce su questo pivot.
-                    for (const prec of minimi) {
-                        const bars = pivotIndex - prec.index;
-                        if (bars < DISTANZA_MIN || bars > DISTANZA_MAX) continue;
-                        // Stesso livello, non un livello qualsiasi: e' quello
-                        // che rende la coppia un secondo tentativo sulla
-                        // stessa quota invece di due punti in fila.
-                        if (prec.livello !== livello) continue;
-                        if (price < prec.price && oscValue < prec.osc) {
-                            candidate.push({ da: prec, a: qui, livello, toro: true, durata: bars });
-                            break;
-                        }
+            // Minimo dell'ES appoggiato al livello: si cerca il tentativo
+            // precedente piu' lontano sulla stessa quota che avesse il VIX
+            // piu' alto, cioe' la paura rientrata da allora.
+            if (isPivot(prices, pivotIndex, false)) {
+                for (const prec of minimi) {
+                    const bars = pivotIndex - prec.index;
+                    if (bars < DISTANZA_MIN || bars > DISTANZA_MAX) continue;
+                    if (prec.livello !== livello) continue;
+                    if (oscValue < prec.osc - DELTA_VIX) {
+                        candidate.push({ da: prec, a: qui, toro: true, durata: bars });
+                        break;
                     }
                 }
                 minimi.push(qui);
                 while (minimi.length && pivotIndex - minimi[0].index > DISTANZA_MAX) minimi.shift();
             }
 
-            if (isPivotHigh(oscillator, pivotIndex)) {
-                const qui: Pivot = { index: pivotIndex, price, osc: oscValue, livello };
-                if (livello !== null) {
-                    for (const prec of massimi) {
-                        const bars = pivotIndex - prec.index;
-                        if (bars < DISTANZA_MIN || bars > DISTANZA_MAX) continue;
-                        if (prec.livello !== livello) continue;
-                        if (price > prec.price && oscValue > prec.osc) {
-                            candidate.push({ da: prec, a: qui, livello, toro: false, durata: bars });
-                            break;
-                        }
+            if (isPivot(prices, pivotIndex, true)) {
+                for (const prec of massimi) {
+                    const bars = pivotIndex - prec.index;
+                    if (bars < DISTANZA_MIN || bars > DISTANZA_MAX) continue;
+                    if (prec.livello !== livello) continue;
+                    if (oscValue > prec.osc + DELTA_VIX) {
+                        candidate.push({ da: prec, a: qui, toro: false, durata: bars });
+                        break;
                     }
                 }
                 massimi.push(qui);
@@ -522,37 +506,54 @@ export default function MarketPage() {
         }
 
         // Un episodio lungo produce una candidata per ogni pivot che lo
-        // attraversa: senza questa passata si finiva con decine di etichette
-        // sovrapposte sullo stesso tratto invece della sola riga che conta.
-        // Si tiene la piu' lunga e si scarta tutto quello che le si accavalla
-        // sullo stesso livello e nello stesso verso.
+        // attraversa: si tiene la piu' lunga e si scarta quello che le si
+        // accavalla. Un tentativo che dura un'ora e' una riga, non trenta.
         candidate.sort((a, b) => b.durata - a.durata);
         const tenute: Candidata[] = [];
         for (const c of candidate) {
             const accavallata = tenute.some((t) =>
-                t.livello === c.livello && t.toro === c.toro
+                t.da.livello === c.da.livello && t.toro === c.toro
                 && c.da.index < t.a.index && t.da.index < c.a.index);
             if (!accavallata) tenute.push(c);
         }
 
         tenute.forEach((c, i) => {
-            annotations[`es-vix-div-${c.toro ? 'bull' : 'bear'}-line-${i}`] = {
+            const colore = c.toro ? 'rgba(34, 197, 94, 0.95)' : 'rgba(239, 68, 68, 0.95)';
+            const nome = c.toro ? 'bull' : 'bear';
+
+            // Sull'ES la riga viene piatta, perche' i due punti stanno sulla
+            // stessa quota: e' il livello provato due volte.
+            annotations[`es-vix-div-${nome}-es-${i}`] = {
                 type: 'line',
                 xMin: points[c.da.index].time,
                 xMax: points[c.a.index].time,
                 yMin: c.da.price,
                 yMax: c.a.price,
                 yScaleID: 'y-right',
-                borderColor: c.toro ? 'rgba(34, 197, 94, 0.95)' : 'rgba(239, 68, 68, 0.95)',
+                borderColor: colore,
                 borderWidth: 2,
                 label: {
                     display: true,
                     content: c.toro ? 'Bull Div' : 'Bear Div',
                     position: 'end',
-                    backgroundColor: c.toro ? 'rgba(34, 197, 94, 0.95)' : 'rgba(239, 68, 68, 0.95)',
+                    backgroundColor: colore,
                     color: '#fff',
                     font: { size: 10, weight: 'bold' }
                 }
+            };
+
+            // Sul VIX e' inclinata, ed e' lei a dire perche' c'e' un segnale:
+            // senza, si vedrebbe solo che il prezzo e' tornato dov'era.
+            annotations[`es-vix-div-${nome}-vix-${i}`] = {
+                type: 'line',
+                xMin: points[c.da.index].time,
+                xMax: points[c.a.index].time,
+                yMin: c.da.osc,
+                yMax: c.a.osc,
+                yScaleID: 'y-left',
+                borderColor: colore,
+                borderWidth: 2,
+                borderDash: [4, 3],
             };
         });
 
