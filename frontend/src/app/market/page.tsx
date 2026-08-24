@@ -528,20 +528,23 @@ export default function MarketPage() {
 
         const newAnnotations: any = {};
         const baseConfigs = [
-            // Morning (solid)
-            { key: 'r1Down', color: '#ef4444', dash: [] },
-            { key: 'r2Down', color: '#f97316', dash: [] },
-            { key: 'r3Down', color: '#facc15', dash: [] },
-            { key: 'r1Up', color: '#3b82f6', dash: [] },
-            { key: 'r2Up', color: '#06b6d4', dash: [] },
-            { key: 'r3Up', color: '#10b981', dash: [] },
-            // Opening Bell (dashed)
-            { key: 'r1DownOb', color: '#ef4444', dash: [6, 3] },
-            { key: 'r2DownOb', color: '#f97316', dash: [6, 3] },
-            { key: 'r3DownOb', color: '#facc15', dash: [6, 3] },
-            { key: 'r1UpOb', color: '#3b82f6', dash: [6, 3] },
-            { key: 'r2UpOb', color: '#06b6d4', dash: [6, 3] },
-            { key: 'r3UpOb', color: '#10b981', dash: [6, 3] },
+            // Mattina: tratteggiata. Sono i livelli delle 10:35, calcolati
+            // sulla chain ES quando l'America dorme ancora: restano un
+            // riferimento, ma non sono quelli su cui si sta scambiando.
+            { key: 'r1Down', color: '#ef4444', dash: [6, 3] },
+            { key: 'r2Down', color: '#f97316', dash: [6, 3] },
+            { key: 'r3Down', color: '#facc15', dash: [6, 3] },
+            { key: 'r1Up', color: '#3b82f6', dash: [6, 3] },
+            { key: 'r2Up', color: '#06b6d4', dash: [6, 3] },
+            { key: 'r3Up', color: '#10b981', dash: [6, 3] },
+            // Opening Bell: continua, perche' a mercato aperto e' quella che
+            // conta e la linea piena e' quella che l'occhio segue.
+            { key: 'r1DownOb', color: '#ef4444', dash: [] },
+            { key: 'r2DownOb', color: '#f97316', dash: [] },
+            { key: 'r3DownOb', color: '#facc15', dash: [] },
+            { key: 'r1UpOb', color: '#3b82f6', dash: [] },
+            { key: 'r2UpOb', color: '#06b6d4', dash: [] },
+            { key: 'r3UpOb', color: '#10b981', dash: [] },
         ];
 
         baseConfigs.forEach(({ key, color, dash }) => {

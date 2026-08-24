@@ -500,7 +500,10 @@ export default function GexPage() {
           color: verso === 'Up'
             ? ['#3b82f6', '#60a5fa', '#93c5fd'][livello - 1]
             : ['#ef4444', '#f87171', '#fca5a5'][livello - 1],
-          dash: suffix ? [8, 4] : [],
+          // Mattina tratteggiata, opening bell continua: durante la
+          // sessione americana i livelli che contano sono quelli calcolati
+          // alle 15:35, e la linea piena e' quella che l'occhio segue.
+          dash: suffix ? [] : [8, 4],
           width: [2.5, 1.5, 1][livello - 1],
         })),
       ),
