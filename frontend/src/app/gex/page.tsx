@@ -90,6 +90,13 @@ const SOGLIA_RIGA = 0.18;
  */
 const SERIE_STEP_SEC = 120;
 
+/**
+ * Da che ora il grafico ha qualcosa da mostrare: e' l'inizio della finestra
+ * del poller dei volumi (13:30 italiane), quindi prima di quest'ora non
+ * esiste nessun gamma con cui confrontare il prezzo.
+ */
+const INIZIO_SESSIONE_SEC = 13 * 3600 + 30 * 60;
+
 function secondiEt(hhmmss: string): number {
   const [h, m, sec] = hhmmss.split(':').map(Number);
   return (h || 0) * 3600 + (m || 0) * 60 + (sec || 0);
@@ -277,18 +284,30 @@ export default function GexPage() {
         if (res.ok) {
           const json = await res.json();
           if (json.history?.length > 0) {
+            // Nessuna conversione: /api/market scrive gia' l'ora italiana, la
+            // stessa del gamma. Qui prima si toglievano sei ore a mano per
+            // portare la linea del prezzo a New York -- ed erano sei fisse,
+            // quindi sbagliate nelle settimane in cui i due cambi d'ora non
+            // coincidono. Restava anche l'ultima cosa in orario americano
+            // sulla pagina, e in "Profile Bars", dove l'unica serie sul tempo
+            // e' proprio il prezzo, faceva sembrare che non fosse cambiato
+            // niente.
+            //
+            // La finestra parte dalle 13:30, quando comincia a raccogliere il
+            // poller dei volumi: cosi' l'asse copre lo stesso tratto del
+            // gamma invece di allargarsi su ore in cui non c'e' nient'altro.
             setSpxHistory(
               json.history
-                .filter((p: any) => p.time && (p.spx != null || p.esf != null) && (p.time.split(':').map(Number)[0] > 15 || (p.time.split(':').map(Number)[0] === 15 && p.time.split(':').map(Number)[1] >= 30)))
-                .map((p: any) => {
-                  const parts = p.time.split(':').map(Number);
-                  let hrs = parts[0];
-                  if (hrs >= 15) {
-                    hrs = hrs - 6;
-                  }
-                  const estTime = `${String(hrs).padStart(2, '0')}:${String(parts[1] || 0).padStart(2, '0')}:${String(parts[2] || 0).padStart(2, '0')}`;
-                  return { time: estTime, spxPrice: p.spx || p.esf, spx: p.spx, esf: p.esf };
+                .filter((p: { time?: string; spx?: number | null; esf?: number | null }) => {
+                  if (!p.time || (p.spx == null && p.esf == null)) return false;
+                  return secondiEt(p.time) >= INIZIO_SESSIONE_SEC;
                 })
+                .map((p: { time: string; spx?: number | null; esf?: number | null }) => ({
+                  time: p.time,
+                  spxPrice: p.spx ?? p.esf,
+                  spx: p.spx,
+                  esf: p.esf,
+                }))
             );
           }
         }
