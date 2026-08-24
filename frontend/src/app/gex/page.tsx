@@ -470,14 +470,20 @@ export default function GexPage() {
       };
     }
 
-    if (viewMode !== 'lines' || gexProfile.length === 0) return annotations;
+    // Le righe orizzontali del livello corrente non ci sono piu': nella vista
+    // a linee quella di ogni strike arriva fino al bordo destro, e il suo
+    // ultimo tratto E' il muro di adesso. Tenerle sarebbe stato disegnare due
+    // volte la stessa cosa, una delle quali stesa anche sopra le ore in cui
+    // non valeva.
 
-    // Le righe orizzontali del livello corrente non ci sono piu': la linea di
-    // ogni strike arriva fino al bordo destro, e il suo ultimo tratto E' il
-    // muro di adesso. Tenerle sarebbe stato disegnare due volte la stessa
-    // cosa, una delle quali stesa anche sopra le ore in cui non valeva.
-
-    // 3. I livelli del Range Calc, tutti quelli che /market ha calcolato.
+    // 2. I livelli del Range Calc.
+    //
+    // Qui sopra c'era un `return` che li tagliava fuori da tutto quello che
+    // non fosse la vista a linee: in "Profile Bars" non se n'e' mai visto
+    // uno. Sono pero' livelli di prezzo su un asse di strike, cioe' proprio
+    // quello che le barre hanno in ordinata -- e' anzi la vista in cui
+    // servono di piu', perche' mostra a che altezza stanno i muri rispetto
+    // ai range della giornata.
     //
     // Qui ne arrivavano quattro su dodici: R1 su e giu' per le due sessioni, e
     // basta. R2 e R3 li calcola /market e li salva insieme agli altri, ma
