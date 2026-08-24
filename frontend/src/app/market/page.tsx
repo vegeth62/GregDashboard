@@ -384,13 +384,41 @@ export default function MarketPage() {
 
 
     // ---- ES/VIX Divergence Detection ----
-    const detectDivergences = useCallback((points: DataPoint[]) => {
+    /**
+     * Divergenze ES/VIX, ma solo dove contano: sui livelli.
+     *
+     * Il rilevatore trovava ogni coppia di pivot che divergeva, e ne trovava
+     * tante: mezze etichette sparse per il grafico, la maggior parte su
+     * oscillazioni in mezzo al niente. Una divergenza fra prezzo e volatilita'
+     * dice qualcosa quando il prezzo sta provando un livello e non riesce a
+     * passarlo -- il VIX che non conferma il nuovo minimo mentre l'ES e'
+     * appoggiato al supporto, o che sale mentre l'ES ribatte sulla
+     * resistenza. In mezzo al range e' rumore che somiglia a un segnale.
+     *
+     * Quindi si chiede che ENTRAMBI i pivot stiano vicino a un livello: e'
+     * quello che rende la coppia un doppio tentativo sulla stessa quota,
+     * invece di due punti qualsiasi in discesa.
+     *
+     * I livelli arrivano dal pannello Range, sono in termini ES come i prezzi
+     * qui, e non passano dal filtro della visibilita': nascondere le linee e'
+     * una scelta di pulizia del grafico, non dice che quei livelli non
+     * esistono piu'.
+     */
+    const detectDivergences = useCallback((points: DataPoint[], livelli: number[]) => {
         const lbL = 5;
         const lbR = 5;
         const rangeLower = 5;
         const rangeUpper = 60;
+        /** Quanto vicino a un livello deve stare un pivot, in punti ES. */
+        const VICINANZA = 6;
 
         if (points.length < lbL + lbR + rangeLower) return {};
+        // Senza livelli non c'e' niente a cui essere vicini: nessun segnale,
+        // che e' la risposta giusta e non un guasto.
+        if (livelli.length === 0) return {};
+
+        const suUnLivello = (prezzo: number) =>
+            livelli.some((l) => Math.abs(prezzo - l) <= VICINANZA);
 
         const annotations: Record<string, unknown> = {};
         const prices = points.map((p) => p.esf);
@@ -436,7 +464,8 @@ export default function MarketPage() {
                     const priceLowerLow = price < lastLowPivot.price;
                     const vixLowerLow = oscValue < lastLowPivot.osc;
 
-                    if (inRange && priceLowerLow && vixLowerLow) {
+                    if (inRange && priceLowerLow && vixLowerLow
+                        && suUnLivello(price) && suUnLivello(lastLowPivot.price)) {
                         annotations[`es-vix-div-bull-line-${bullCount}`] = {
                             type: 'line',
                             xMin: points[lastLowPivot.index].time,
@@ -468,7 +497,8 @@ export default function MarketPage() {
                     const priceHigherHigh = price > lastHighPivot.price;
                     const vixHigherHigh = oscValue > lastHighPivot.osc;
 
-                    if (inRange && priceHigherHigh && vixHigherHigh) {
+                    if (inRange && priceHigherHigh && vixHigherHigh
+                        && suUnLivello(price) && suUnLivello(lastHighPivot.price)) {
                         annotations[`es-vix-div-bear-line-${bearCount}`] = {
                             type: 'line',
                             xMin: points[lastHighPivot.index].time,
@@ -496,6 +526,14 @@ export default function MarketPage() {
 
         return annotations;
     }, []);
+
+    /** I livelli del pannello Range, in numeri, per il filtro delle divergenze. */
+    const livelliPerDivergenze = useMemo(
+        () => Object.values(refLines)
+            .map((v) => parseFloat(v as string))
+            .filter((n) => !isNaN(n) && n > 0),
+        [refLines],
+    );
 
     // ---- Zoom ----
     const updateZoomState = useCallback(() => {
@@ -578,7 +616,7 @@ export default function MarketPage() {
 
         // Divergence boxes
         if (showDivergences) {
-            const divAnnotations = detectDivergences(dataPoints);
+            const divAnnotations = detectDivergences(dataPoints, livelliPerDivergenze);
             Object.assign(newAnnotations, divAnnotations);
         }
 
@@ -704,7 +742,7 @@ export default function MarketPage() {
         }
 
         chart.update('none');
-    }, [dataPoints, firstEsfValue, refLines, refLineVisibility, showDivergences, detectDivergences, mostraStraddle]);
+    }, [dataPoints, firstEsfValue, refLines, refLineVisibility, showDivergences, detectDivergences, livelliPerDivergenze, mostraStraddle]);
 
     // ---- Plugins (zoom) ----
     useEffect(() => {
