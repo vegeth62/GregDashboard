@@ -272,6 +272,13 @@ export default function MarketPage() {
     const [lastUpdate, setLastUpdate] = useState<string>('');
     const [firstEsfValue, setFirstEsfValue] = useState<number | null>(null);
     const [showSettings, setShowSettings] = useState(false);
+    /**
+     * Le due linee arancioni del cono, i dataset 'Straddle Up' e
+     * 'Straddle Down'. Sono un'altra cosa dai livelli R1/R2/R3, che pure
+     * dallo straddle si ricavano: quelle sono annotazioni orizzontali ferme,
+     * queste seguono il prezzo per tutta la sessione.
+     */
+    const [mostraStraddle, setMostraStraddle] = useState(true);
   const [activeTab, setActiveTab] = useState<'market'|'gex'>('market');
 
     const [pluginsReady, setPluginsReady] = useState(false);
@@ -360,6 +367,8 @@ export default function MarketPage() {
             // Load divergence preference
             const savedDiv = localStorage.getItem('marketShowDivergences');
             if (savedDiv !== null) setShowDivergences(savedDiv === 'true');
+            const savedStr = localStorage.getItem('marketShowStraddle');
+            if (savedStr !== null) setMostraStraddle(savedStr === 'true');
         }
     }, [router]);
 
@@ -367,6 +376,10 @@ export default function MarketPage() {
     useEffect(() => {
         localStorage.setItem('marketShowDivergences', String(showDivergences));
     }, [showDivergences]);
+
+    useEffect(() => {
+        localStorage.setItem('marketShowStraddle', String(mostraStraddle));
+    }, [mostraStraddle]);
 
 
 
@@ -521,6 +534,10 @@ export default function MarketPage() {
         if (chart.data.datasets.length > 3) {
             chart.data.datasets[2].data = dataPoints.map((d) => d.coneUp ?? null);
             chart.data.datasets[3].data = dataPoints.map((d) => d.coneDown ?? null);
+            // Nascoste per dataset e non svuotando i dati: cosi' l'asse non si
+            // riscala quando tornano, e la legenda resta coerente.
+            chart.data.datasets[2].hidden = !mostraStraddle;
+            chart.data.datasets[3].hidden = !mostraStraddle;
         }
 
 
@@ -687,7 +704,7 @@ export default function MarketPage() {
         }
 
         chart.update('none');
-    }, [dataPoints, firstEsfValue, refLines, refLineVisibility, showDivergences, detectDivergences]);
+    }, [dataPoints, firstEsfValue, refLines, refLineVisibility, showDivergences, detectDivergences, mostraStraddle]);
 
     // ---- Plugins (zoom) ----
     useEffect(() => {
@@ -1112,16 +1129,16 @@ export default function MarketPage() {
     };
 
     /**
-     * Almeno una linea dello straddle e' accesa?
+     * Almeno uno dei livelli R1/R2/R3 e' acceso?
      *
-     * Serve a decidere cosa fa l'interruttore unico: se se ne vede anche una
-     * sola le spegne tutte, altrimenti le riaccende. Cosi' un solo comando
+     * Serve a decidere cosa fa l'interruttore unico: se se ne vede anche uno
+     * solo li spegne tutti, altrimenti li riaccende. Cosi' un solo comando
      * basta sempre, senza stati intermedi da indovinare.
      */
     const straddleVisibile = Object.values(refLineVisibility).some(Boolean);
 
     /**
-     * Accende o spegne in blocco le dodici linee dello straddle.
+     * Accende o spegne in blocco i dodici livelli R1/R2/R3.
      *
      * Gli occhietti nel pannello Ref Lines ci sono da sempre, ma sono uno per
      * linea e stanno dentro un pannello da aprire: per togliere di mezzo i
@@ -1694,15 +1711,26 @@ export default function MarketPage() {
                             <button onClick={() => setActiveTab('gex')} className={`px-3 py-1 text-xs font-bold rounded ${activeTab === 'gex' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>GEX</button>
                         </div>
                         
-                        {/* Straddle on/off: un colpo solo per tutte e dodici */}
+                        {/* Le due linee del cono */}
+                        <button
+                            onClick={() => setMostraStraddle((v) => !v)}
+                            title={mostraStraddle ? 'Nascondi le linee dello straddle' : 'Mostra le linee dello straddle'}
+                            className={`px-3 py-1.5 border rounded-lg text-xs font-bold transition-colors ${mostraStraddle
+                                ? 'bg-orange-600/30 text-orange-300 border-orange-500/50 hover:bg-orange-600/40'
+                                : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700'}`}
+                        >
+                            {mostraStraddle ? '◉' : '◌'} Straddle
+                        </button>
+
+                        {/* I dodici livelli R1/R2/R3, che sono un'altra cosa */}
                         <button
                             onClick={toggleStraddle}
-                            title={straddleVisibile ? 'Nascondi le linee dello straddle (anche sulla pagina GEX)' : 'Mostra le linee dello straddle'}
+                            title={straddleVisibile ? 'Nascondi i livelli R1/R2/R3 (anche sulla pagina GEX)' : 'Mostra i livelli R1/R2/R3'}
                             className={`px-3 py-1.5 border rounded-lg text-xs font-bold transition-colors ${straddleVisibile
                                 ? 'bg-sky-600/30 text-sky-300 border-sky-500/50 hover:bg-sky-600/40'
                                 : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700'}`}
                         >
-                            {straddleVisibile ? '◉' : '◌'} Straddle
+                            {straddleVisibile ? '◉' : '◌'} Range
                         </button>
 
                         {/* Settings button */}
