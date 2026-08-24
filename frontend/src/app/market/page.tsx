@@ -1111,6 +1111,33 @@ export default function MarketPage() {
         setRefLineVisibility((prev) => ({ ...prev, [key]: !prev[key] }));
     };
 
+    /**
+     * Almeno una linea dello straddle e' accesa?
+     *
+     * Serve a decidere cosa fa l'interruttore unico: se se ne vede anche una
+     * sola le spegne tutte, altrimenti le riaccende. Cosi' un solo comando
+     * basta sempre, senza stati intermedi da indovinare.
+     */
+    const straddleVisibile = Object.values(refLineVisibility).some(Boolean);
+
+    /**
+     * Accende o spegne in blocco le dodici linee dello straddle.
+     *
+     * Gli occhietti nel pannello Ref Lines ci sono da sempre, ma sono uno per
+     * linea e stanno dentro un pannello da aprire: per togliere di mezzo i
+     * range mentre si guarda il grafico ci volevano dodici clic e due
+     * passaggi. La visibilita' finisce nel localStorage, che la pagina del
+     * gamma rilegge: spegnendole qui spariscono anche di la'.
+     */
+    const toggleStraddle = () => {
+        const acceso = !straddleVisibile;
+        setRefLineVisibility((prev) => {
+            const nuovo = { ...prev };
+            (Object.keys(nuovo) as (keyof RefLineVisibility)[]).forEach((k) => { nuovo[k] = acceso; });
+            return nuovo;
+        });
+    };
+
     // ---- Crosshair ----
     const handleMouseMove = (e: React.MouseEvent) => {
         const chart = chartRef.current;
@@ -1667,6 +1694,17 @@ export default function MarketPage() {
                             <button onClick={() => setActiveTab('gex')} className={`px-3 py-1 text-xs font-bold rounded ${activeTab === 'gex' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>GEX</button>
                         </div>
                         
+                        {/* Straddle on/off: un colpo solo per tutte e dodici */}
+                        <button
+                            onClick={toggleStraddle}
+                            title={straddleVisibile ? 'Nascondi le linee dello straddle (anche sulla pagina GEX)' : 'Mostra le linee dello straddle'}
+                            className={`px-3 py-1.5 border rounded-lg text-xs font-bold transition-colors ${straddleVisibile
+                                ? 'bg-sky-600/30 text-sky-300 border-sky-500/50 hover:bg-sky-600/40'
+                                : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700'}`}
+                        >
+                            {straddleVisibile ? '◉' : '◌'} Straddle
+                        </button>
+
                         {/* Settings button */}
                         <button
                             onClick={() => setShowSettings(!showSettings)}
