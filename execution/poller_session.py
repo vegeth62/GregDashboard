@@ -34,10 +34,46 @@ def giorno_corrente() -> str:
     return datetime.now().strftime('%Y-%m-%d')
 
 
+# Codici che TWS manda a ogni connessione per dire che va tutto bene: se si
+# stampassero, il log sarebbe pieno di righe che non vogliono dire niente.
+_INNOCUI = {
+    1100, 1101, 1102,        # connessione persa e ripresa
+    2104, 2106, 2107, 2108,  # "market data farm connection is OK"
+    2119, 2158,              # "sec-def data farm connection is OK"
+    2100, 2103, 2105, 2157,  # farm scollegate: le riprende da sola
+}
+
+
+def _stampa_errore(reqId, code, msg, contract) -> None:
+    if code in _INNOCUI:
+        return
+    dettaglio = ''
+    if contract is not None:
+        strike = getattr(contract, 'strike', None)
+        right = getattr(contract, 'right', None)
+        if strike:
+            dettaglio = f' [{getattr(contract, "symbol", "?")} {strike} {right}]'
+    print(f'IBKR errore {code} (req {reqId}): {msg}{dettaglio}', file=sys.stderr)
+
+
 def registra_connessione(ib) -> None:
-    """Affida la connessione al modulo, che la chiude a fine sessione."""
+    """
+    Affida la connessione al modulo, che la chiude a fine sessione, e le
+    attacca un ascoltatore per gli errori.
+
+    Senza l'ascoltatore ib_insync manda gli errori al logging di Python, che
+    qui non e' configurato: finivano nel nulla. Il 21/08/2026 il poller dei
+    volumi ha raccolto per ore volumi a zero su una decina di strike contigui
+    -- il gamma arrivava, le quotazioni no -- e non c'era una sola riga di log
+    da cui capire cosa TWS avesse risposto. Meglio qualche riga di troppo che
+    diagnosi fatte a indovinare.
+    """
     global _connessione
     _connessione = ib
+    try:
+        ib.errorEvent += _stampa_errore
+    except Exception as e:
+        print(f'[poller] impossibile ascoltare gli errori IBKR: {e}', file=sys.stderr)
 
 
 def _chiudi_connessione() -> None:

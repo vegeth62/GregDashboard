@@ -246,6 +246,10 @@ def main():
     last_poll = 0
     open_spx_captured = False
     giorno_sessione = get_today_key()
+    # Quanti contratti hanno mai riportato volume in questa sessione, e da
+    # quanti giri ne rispondono molti meno: vedi il controllo piu' sotto.
+    max_attivi = 0
+    giri_al_buio = 0
 
     while True:
         # A mezzanotte la sessione finisce: la scadenza 0DTE scelta all'avvio
@@ -347,6 +351,30 @@ def main():
                 
                 append_to_session_file(today_key, snapshot)
                 push_snapshot_to_supabase(today_key, snapshot)
+
+                # Le sottoscrizioni si spengono da sole, e in silenzio.
+                #
+                # Il 21/08/2026 i contratti che riportavano volume sono passati
+                # da 71 a 33 in dieci minuti, senza un errore da TWS: il gamma
+                # continuava ad arrivare su tutti e 37 gli strike, il volume no.
+                # Nel profilo restava un buco di dieci strike contigui proprio
+                # attorno al denaro, e i dati salvati erano zeri che sembravano
+                # dati veri. Riavviando il poller sono tornati 74 su 74.
+                #
+                # Non si sa ancora perche' si spengano. Si sa pero' che una
+                # sessione nuova le rimette a posto, e questa e' gia' una cosa
+                # che la macchina sa fare: uscire da main() vuol dire farsi
+                # riaprire da esegui_a_oltranza() trenta secondi dopo.
+                if valid_data_points > max_attivi:
+                    max_attivi = valid_data_points
+                if max_attivi >= 20 and valid_data_points < max_attivi * 0.5:
+                    giri_al_buio += 1
+                else:
+                    giri_al_buio = 0
+                if giri_al_buio >= 12:
+                    print(f"[{time_str}] Solo {valid_data_points} contratti con volume su {max_attivi} "
+                          f"visti in giornata: sottoscrizioni degradate, chiudo la sessione.")
+                    return
 
                 last_poll = timestamp
         else:
