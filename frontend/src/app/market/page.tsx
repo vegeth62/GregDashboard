@@ -1777,9 +1777,10 @@ export default function MarketPage() {
 
                     <div className="flex flex-wrap items-center gap-2 mt-3 md:mt-0">
                         {/* Tab Switcher */}
-                        <div className="flex bg-slate-900 border border-slate-700 rounded-lg p-1 mr-4">
+<div className="flex bg-slate-900 border border-slate-700 rounded-lg p-1">
                             <button onClick={() => setActiveTab('market')} className={`px-3 py-1 text-xs font-bold rounded ${activeTab === 'market' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>MARKET</button>
                             <button onClick={() => setActiveTab('gex')} className={`px-3 py-1 text-xs font-bold rounded ${activeTab === 'gex' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>GEX</button>
+                            <button onClick={() => router.push('/spx-volumes')} className="px-3 py-1 text-xs font-bold rounded text-slate-500 hover:text-white">VOLUMI SPX</button>
                         </div>
                         
                         {/* Le due linee del cono */}
@@ -1804,6 +1805,20 @@ export default function MarketPage() {
                             {straddleVisibile ? '◉' : '◌'} Range
                         </button>
 
+                        {/* Le divergenze stavano nella riga dello zoom, lontane
+                            dagli altri due: i tre comandi che accendono e
+                            spengono roba sul grafico erano sparsi in due punti
+                            diversi dello schermo. */}
+                        <button
+                            onClick={() => setShowDivergences(!showDivergences)}
+                            title={showDivergences ? 'Nascondi le divergenze' : 'Mostra le divergenze'}
+                            className={`px-3 py-1.5 border rounded-lg text-xs font-bold transition-colors mr-4 ${showDivergences
+                                ? 'bg-yellow-500/20 text-yellow-500 border-yellow-500/30 hover:bg-yellow-500/30'
+                                : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700'}`}
+                        >
+                            {showDivergences ? '◉' : '◌'} Divergenze
+                        </button>
+
                         {/* Settings button */}
                         <button
                             onClick={() => setShowSettings(!showSettings)}
@@ -1823,12 +1838,6 @@ export default function MarketPage() {
                             📐 Range Calc
                         </button>
 
-                        <button
-                            onClick={() => router.push('/spx-volumes')}
-                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 border border-blue-400 rounded-lg text-xs font-bold text-white transition-colors"
-                        >
-                            📊 VOLUMI SPX
-                        </button>
 
 
 
@@ -2065,16 +2074,6 @@ export default function MarketPage() {
                             <button onClick={() => handleZoomOut('y')} className="w-8 h-8 flex items-center justify-center bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded text-slate-300 hover:text-white transition-colors" title="Zoom Out Y">−</button>
                             <button onClick={() => handleZoomIn('y')} className="w-8 h-8 flex items-center justify-center bg-slate-700/50 hover:bg-slate-700 border border-slate-600 rounded text-slate-300 hover:text-white transition-colors" title="Zoom In Y">+</button>
                         </div>
-                        <button
-                            onClick={() => setShowDivergences(!showDivergences)}
-                            className={`px-3 py-1.5 border rounded-lg text-xs font-medium transition-colors ml-4 ${showDivergences
-                                ? 'bg-yellow-500/20 text-yellow-500 border-yellow-500/30 hover:bg-yellow-500/30'
-                                : 'bg-slate-700/50 text-slate-400 border-slate-600 hover:bg-slate-700'
-                                }`}
-                            title={showDivergences ? 'Hide Divergences' : 'Show Divergences'}
-                        >
-                            {showDivergences ? '🔔 Div ON' : '🔕 Div OFF'}
-                        </button>
 
 
 
